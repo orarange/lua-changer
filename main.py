@@ -1,41 +1,35 @@
+import tkinter as tk
+from tkinter import filedialog
 import os
 import re
 import time
 import shutil
+import threading
 
-def copy_xml_to_txt(xml_filepath, txt_filepath):
-    """XMLファイルの内容をテキストファイルにコピーする。
+def copy_xml_to_txt(xml_filepath):
 
-    Args:
-        xml_filepath (str): 入力XMLファイルのパス。
-        txt_filepath (str): 出力テキストファイルのパス。
-    """
     try:
         with open(xml_filepath, 'r', encoding='utf-8') as xml_file:
             xml_content = xml_file.read()
 
-        temp_txt_filepath = txt_filepath  # 一時的なテキストファイル名
-        with open(temp_txt_filepath, 'w', encoding='utf-8') as txt_file:
+        txt_filename = os.path.splitext(os.path.basename(xml_filepath))[0] + ".txt"
+        txt_filepath = os.path.join(os.path.dirname(xml_filepath), txt_filename)
+
+        with open(txt_filepath, 'w', encoding='utf-8') as txt_file:
             txt_file.write(xml_content)
 
         print(f"XMLファイルの内容を{txt_filepath}にコピーしました。")
+        return txt_filepath  
 
     except FileNotFoundError:
         print("xmlファイルが見つかりませんでした。")
+        return None
     except Exception as e:
         print(f"エラーが発生しました: {e}")
+        return None
 
 def replace_lua_in_txt(txt_filepath, search_string, replace_lua_filepath, output_xml_filepath):
-    """
-    テキストファイルから指定された文字列を含むLuaプログラムを見つけ出し、
-    指定されたLuaプログラムに置き換え、結果をXMLファイルにコピーする。
 
-    Args:
-        txt_filepath (str): 対象のテキストファイルのパス。
-        search_string (str): 検索する文字列。
-        replace_lua_filepath (str): 置き換えるLuaプログラムのファイルパス。
-        output_xml_filepath (str): 出力XMLファイルのパス。
-    """
     try:
         with open(txt_filepath, 'r', encoding='utf-8') as txt_file:
             txt_content = txt_file.read()
@@ -43,21 +37,17 @@ def replace_lua_in_txt(txt_filepath, search_string, replace_lua_filepath, output
         with open(replace_lua_filepath, 'r', encoding='utf-8') as lua_file:
             replace_lua_content = lua_file.read()
 
-        # 検索文字列を含むLuaプログラムを検索
         pattern = re.compile(re.escape(search_string) + r'.*?end', re.DOTALL)
         match = pattern.search(txt_content)
 
         if match:
-            # Luaプログラムを置き換え
             new_txt_content = txt_content.replace(match.group(0), replace_lua_content)
 
-            # テキストファイルに書き込み
             with open(txt_filepath, 'w', encoding='utf-8') as txt_file:
                 txt_file.write(new_txt_content)
 
             print(f"{txt_filepath}内のLuaプログラムを置き換えました。")
 
-            # output.txtをoutput.xmlにコピー
             shutil.copy(txt_filepath, output_xml_filepath)
             print(f"{txt_filepath}を{output_xml_filepath}にコピーしました。")
         else:
@@ -68,14 +58,60 @@ def replace_lua_in_txt(txt_filepath, search_string, replace_lua_filepath, output
     except Exception as e:
         print(f"エラーが発生しました: {e}")
 
-if __name__ == "__main__":
-    xml_file_path = "input.xml"  # 入力XMLファイルのパス
-    copy_xml_to_txt(xml_file_path, "output.txt")  # 出力テキストファイルのパスは仮のもの
-    #2秒待機
-    time.sleep(2)
+def browse_file(entry, initialdir=None):
+    filename = filedialog.askopenfilename(initialdir=initialdir)
+    entry.delete(0, tk.END)
+    entry.insert(0, filename)
 
-    txt_file_path = "output.txt"  # 対象のテキストファイルのパス
-    search_string = "-- autochanger"  # 検索する文字列
-    replace_lua_file_path = "main.lua"  # 置き換えるLuaプログラムのファイルパス
-    output_xml_file_path = "final_output.xml"  # 最終的な出力XMLファイルのパス
+def run_script():
+    xml_file_path = xml_file_entry.get()
+    txt_file_path = copy_xml_to_txt(xml_file_path)  
+    if txt_file_path is None:
+        print("XMLファイルのコピーに失敗しました。")
+        return
+
+    search_string = search_string_entry.get()
+    replace_lua_file_path = replace_lua_file_entry.get()
+    output_xml_file_path = output_xml_file_entry.get()
+
+    time.sleep(2)
     replace_lua_in_txt(txt_file_path, search_string, replace_lua_file_path, output_xml_file_path)
+
+root = tk.Tk()
+root.title("Lua Changer")
+
+default_xml_dir = r"C:\Users\user\AppData\Roaming\Stormworks\data\vehicles"
+
+xml_file_label = tk.Label(root, text="入力XMLファイル:")
+xml_file_label.grid(row=0, column=0, sticky=tk.W)
+xml_file_entry = tk.Entry(root, width=50)
+xml_file_entry.grid(row=0, column=1)
+xml_file_button = tk.Button(root, text="参照", command=lambda: browse_file(xml_file_entry, default_xml_dir))
+xml_file_button.grid(row=0, column=2)
+
+replace_lua_file_label = tk.Label(root, text="置換Luaファイル:")
+replace_lua_file_label.grid(row=1, column=0, sticky=tk.W)
+replace_lua_file_entry = tk.Entry(root, width=50)
+replace_lua_file_entry.grid(row=1, column=1)
+replace_lua_file_button = tk.Button(root, text="参照", command=lambda: browse_file(replace_lua_file_entry))
+replace_lua_file_button.grid(row=1, column=2)
+
+output_xml_file_label = tk.Label(root, text="出力XMLファイル:")
+output_xml_file_label.grid(row=2, column=0, sticky=tk.W)
+output_xml_file_entry = tk.Entry(root, width=50)
+output_xml_file_entry.grid(row=2, column=1)
+output_xml_file_button = tk.Button(root, text="参照", command=lambda: browse_file(output_xml_file_entry))
+output_xml_file_button.grid(row=2, column=2)
+
+# 検索文字列のエントリー
+search_string_label = tk.Label(root, text="検索文字列:")
+search_string_label.grid(row=3, column=0, sticky=tk.W)
+search_string_entry = tk.Entry(root, width=50)
+search_string_entry.grid(row=3, column=1)
+search_string_entry.insert(0, "-- autochanger") 
+
+# 実行ボタン
+run_button = tk.Button(root, text="実行", command=run_script)
+run_button.grid(row=4, column=1)
+
+root.mainloop()
