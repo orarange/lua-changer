@@ -1,8 +1,5 @@
-/autochanger.py
-/filtered_lua_scripts
-/final_output.xml
-/input.xml
-/main.lua
-/output.txt
-/sample copy.xml
-/sample.xml
+main.lua
+lua changer.sln
+vehicle
+obj
+bin
