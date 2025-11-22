@@ -14,6 +14,7 @@ namespace StormworksLuaReplacer
         private List<LuaScriptNode> luaScripts;
         private FileSystemWatcher fileWatcher;
         private bool isReloading = false;
+        private string scriptDetectionPrefix = "-- autochanger";
 
         public MainForm()
         {
@@ -140,7 +141,15 @@ namespace StormworksLuaReplacer
             };
             btnSaveAs.Click += BtnSaveAs_Click;
 
-            pnlButtons.Controls.AddRange(new Control[] { btnLoadLuaFile, btnReplace, btnSave, btnSaveAs });
+            var btnSettings = new Button
+            {
+                Text = "検出設定",
+                Width = 100,
+                Height = 40
+            };
+            btnSettings.Click += BtnSettings_Click;
+
+            pnlButtons.Controls.AddRange(new Control[] { btnLoadLuaFile, btnReplace, btnSave, btnSaveAs, btnSettings });
 
             // レイアウト設定
             mainLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
@@ -222,9 +231,9 @@ namespace StormworksLuaReplacer
                 var secondLine = lines.Length > 1 ? lines[1].Trim() : "";
                 
                 // -- autochangerで始まるコメントがあるスクリプトのみを対象とする
-                if (!firstLine.StartsWith("-- autochanger", StringComparison.OrdinalIgnoreCase))
+                if (!firstLine.StartsWith(scriptDetectionPrefix, StringComparison.OrdinalIgnoreCase))
                 {
-                    continue; // autochangerコメントがない場合はスキップ
+                    continue; // 指定されたプレフィックスがない場合はスキップ
                 }
 
                 // 識別子を取得: 1行目と2行目のコメントを組み合わせる
@@ -487,6 +496,26 @@ namespace StormworksLuaReplacer
             }
         }
 
+        private void BtnSettings_Click(object? sender, EventArgs e)
+        {
+            using (var settingsDialog = new SettingsDialog(scriptDetectionPrefix))
+            {
+                if (settingsDialog.ShowDialog() == DialogResult.OK)
+                {
+                    scriptDetectionPrefix = settingsDialog.DetectionPrefix;
+                    
+                    // 設定変更後、スクリプトを再検出
+                    if (vehicleXml != null)
+                    {
+                        ExtractLuaScripts();
+                        UpdateUI();
+                        MessageBox.Show($"検出条件を更新しました。\n{luaScripts.Count}個のスクリプトが見つかりました。",
+                            "成功", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    }
+                }
+            }
+        }
+
         [STAThread]
         static void Main()
         {
@@ -504,5 +533,120 @@ namespace StormworksLuaReplacer
         public string Script { get; set; } = string.Empty;
         public string DisplayName { get; set; } = string.Empty;
         public string NodePath { get; set; } = string.Empty;
+    }
+
+    public class SettingsDialog : Form
+    {
+        private TextBox txtPrefix;
+        public string DetectionPrefix { get; private set; }
+
+        public SettingsDialog(string currentPrefix)
+        {
+            DetectionPrefix = currentPrefix;
+            txtPrefix = new TextBox();
+            InitializeDialog();
+        }
+
+        private void InitializeDialog()
+        {
+            this.Text = "スクリプト検出設定";
+            this.Size = new System.Drawing.Size(500, 200);
+            this.StartPosition = FormStartPosition.CenterParent;
+            this.FormBorderStyle = FormBorderStyle.FixedDialog;
+            this.MaximizeBox = false;
+            this.MinimizeBox = false;
+
+            var mainLayout = new TableLayoutPanel
+            {
+                Dock = DockStyle.Fill,
+                ColumnCount = 1,
+                RowCount = 3,
+                Padding = new Padding(15)
+            };
+
+            mainLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            mainLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            mainLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 50));
+
+            // 説明ラベル
+            var lblDescription = new Label
+            {
+                Text = "検出するスクリプトの先頭コメントプレフィックスを設定してください。\n例: \"-- autochanger\" と入力すると、この文字列で始まるスクリプトのみが検出されます。",
+                Dock = DockStyle.Fill,
+                AutoSize = true,
+                Padding = new Padding(0, 0, 0, 15)
+            };
+
+            // プレフィックス入力
+            var pnlInput = new Panel
+            {
+                Dock = DockStyle.Fill,
+                Height = 35
+            };
+
+            var lblPrefix = new Label
+            {
+                Text = "検出プレフィックス:",
+                AutoSize = true,
+                Location = new System.Drawing.Point(0, 8)
+            };
+
+            txtPrefix = new TextBox
+            {
+                Text = DetectionPrefix,
+                Width = 300,
+                Location = new System.Drawing.Point(130, 5),
+                Font = new System.Drawing.Font("Consolas", 10)
+            };
+
+            pnlInput.Controls.Add(lblPrefix);
+            pnlInput.Controls.Add(txtPrefix);
+
+            // ボタンパネル
+            var pnlButtons = new FlowLayoutPanel
+            {
+                Dock = DockStyle.Fill,
+                FlowDirection = FlowDirection.RightToLeft,
+                Padding = new Padding(0, 10, 0, 0)
+            };
+
+            var btnOK = new Button
+            {
+                Text = "OK",
+                DialogResult = DialogResult.OK,
+                Width = 80,
+                Height = 30
+            };
+            btnOK.Click += (s, e) => 
+            {
+                if (string.IsNullOrWhiteSpace(txtPrefix.Text))
+                {
+                    MessageBox.Show("プレフィックスを入力してください。", "警告",
+                        MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    return;
+                }
+                DetectionPrefix = txtPrefix.Text;
+                this.Close();
+            };
+
+            var btnCancel = new Button
+            {
+                Text = "キャンセル",
+                DialogResult = DialogResult.Cancel,
+                Width = 80,
+                Height = 30
+            };
+
+            pnlButtons.Controls.Add(btnCancel);
+            pnlButtons.Controls.Add(btnOK);
+
+            mainLayout.Controls.Add(lblDescription, 0, 0);
+            mainLayout.Controls.Add(pnlInput, 0, 1);
+            mainLayout.Controls.Add(pnlButtons, 0, 2);
+
+            this.Controls.Add(mainLayout);
+            this.AcceptButton = btnOK;
+            this.CancelButton = btnCancel;
+        }
     }
 }
