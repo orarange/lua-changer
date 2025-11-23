@@ -5,6 +5,7 @@ using System.IO;
 using System.Linq;
 using System.Windows.Forms;
 using System.Xml.Linq;
+using System.Diagnostics;
 using System.Runtime.InteropServices;
 
 namespace StormworksLuaReplacer
@@ -42,19 +43,105 @@ namespace StormworksLuaReplacer
         private const int RESIZE_BORDER = 8;
         private Point resizeStart;
         private Rectangle resizeStartBounds;
+        private bool isResizing = false;
 
         public MainForm()
         {
             InitializeComponent();
-            
-            // ボーダーレスウィンドウでもリサイズ可能にする
+
+            // ボーダーレスウィンドウでもリサイズ可能にする（フォーム全体のイベントを補助）
             this.MouseDown += MainForm_MouseDown;
             this.MouseMove += MainForm_MouseMove;
             this.MouseUp += MainForm_MouseUp;
             this.Cursor = Cursors.Default;
-            
+
+            // 子コントロールがマウスイベントを奪ってしまうことが多いので、全子コントロールにも
+            // フォワード用ハンドラを登録してフォームのハンドラに渡す
+            AttachMouseHandlers(this);
+
             fileWatcher = new FileSystemWatcher { NotifyFilter = NotifyFilters.LastWrite };
             fileWatcher.Changed += FileWatcher_Changed;
+        }
+
+        // Log method removed (debug code cleaned)
+
+        /// <summary>
+        /// 再帰的に子コントロールへマウスイベントを登録してフォームにフォワードする。
+        /// （ボーダーレスで子コントロールがフォームの MouseDown/Move を奪うケース対策）
+        /// </summary>
+        private void AttachMouseHandlers(Control parent)
+        {
+            foreach (Control c in parent.Controls)
+            {
+                // フォワード用に登録（必要なイベントをカバー）
+                c.MouseDown += ChildControl_MouseDown;
+                c.MouseMove += ChildControl_MouseMove;
+                c.MouseUp += ChildControl_MouseUp;
+
+                // 一部コントロールは内部でマウスをキャプチャするので、MouseEnter等もログしておくと良い
+                c.MouseEnter += (s, e) => { };
+                c.MouseLeave += (s, e) => { };
+
+                if (c.HasChildren) AttachMouseHandlers(c);
+            }
+        }
+
+        // ヘルパー: フォームのクライアント座標がリサイズ領域にあるかを判定
+        private bool IsPointInResizeZone(Point clientPoint)
+        {
+            bool left = clientPoint.X <= RESIZE_BORDER;
+            bool right = clientPoint.X >= this.ClientSize.Width - RESIZE_BORDER;
+            bool top = clientPoint.Y <= RESIZE_BORDER;
+            bool bottom = clientPoint.Y >= this.ClientSize.Height - RESIZE_BORDER;
+            return left || right || top || bottom;
+        }
+
+        private string GetControlPath(Control c)
+        {
+            var parts = new List<string>();
+            var cur = c;
+            while (cur != null)
+            {
+                parts.Add(cur.GetType().Name + (string.IsNullOrEmpty(cur.Name) ? "" : $"({cur.Name})"));
+                cur = cur.Parent;
+            }
+            parts.Reverse();
+            return string.Join("/", parts);
+        }
+
+        private void ChildControl_MouseDown(object? sender, MouseEventArgs e)
+        {
+            var ctrl = sender as Control;
+            if (ctrl == null) return;
+
+            // 画面上の座標へ変換してフォームのハンドラを呼ぶ
+            var screenPt = ctrl.PointToScreen(e.Location);
+            var formPt = this.PointToClient(screenPt);
+            var fe = new MouseEventArgs(e.Button, e.Clicks, formPt.X, formPt.Y, e.Delta);
+            // debug log removed
+            MainForm_MouseDown(this, fe);
+        }
+
+        private void ChildControl_MouseMove(object? sender, MouseEventArgs e)
+        {
+            var ctrl = sender as Control;
+            if (ctrl == null) return;
+            var screenPt = ctrl.PointToScreen(e.Location);
+            var formPt = this.PointToClient(screenPt);
+            var fe = new MouseEventArgs(e.Button, e.Clicks, formPt.X, formPt.Y, e.Delta);
+            // debug log removed
+            MainForm_MouseMove(this, fe);
+        }
+
+        private void ChildControl_MouseUp(object? sender, MouseEventArgs e)
+        {
+            var ctrl = sender as Control;
+            if (ctrl == null) return;
+            var screenPt = ctrl.PointToScreen(e.Location);
+            var formPt = this.PointToClient(screenPt);
+            var fe = new MouseEventArgs(e.Button, e.Clicks, formPt.X, formPt.Y, e.Delta);
+            // debug log removed
+            MainForm_MouseUp(this, fe);
         }
 
         private void InitializeComponent()
@@ -133,17 +220,50 @@ namespace StormworksLuaReplacer
                 btnMaximize.Text = this.WindowState == FormWindowState.Maximized ? "🗗" : "🗖"; // Restore/Maximize symbol
             };
 
-            // Drag functionality
-            pnlTitleBar.MouseDown += (s, e) => appState.MouseLocation = e.Location;
-            pnlTitleBar.MouseMove += (s, e) => {
-                if (e.Button == MouseButtons.Left)
+            // Drag functionality (改良版)
+            pnlTitleBar.MouseDown += (s, e) =>
+            {
+                // クリック位置をフォームのクライアント座標に変換してリサイズ領域を判定
+                var screenPt = pnlTitleBar.PointToScreen(e.Location);
+                var formPt = this.PointToClient(screenPt);
+
+                // リサイズエッジ内ならドラッグ処理は開始しない（ネイティブのリサイズ/当方のリサイズ処理に委ねる）
+                if (IsPointInResizeZone(formPt))
+                    return;
+
+                appState.MouseLocation = e.Location;
+            };
+
+            pnlTitleBar.MouseMove += (s, e) =>
+            {
+                // マウス左押下で移動を行うが、移動中にリサイズエッジに進入したら移動を停止する
+                if (e.Button == MouseButtons.Left && appState.MouseLocation != Point.Empty)
                 {
+                    var screenPt = pnlTitleBar.PointToScreen(e.Location);
+                    var formPt = this.PointToClient(screenPt);
+
+                    if (IsPointInResizeZone(formPt))
+                    {
+                        // 移動をブロックして、以降はリサイズ側の処理に任せる
+                        return;
+                    }
+
                     this.Left += e.X - appState.MouseLocation.X;
                     this.Top += e.Y - appState.MouseLocation.Y;
                 }
             };
-            lblTitle.MouseDown += (s, e) => {
-                // Propagate mouse down to parent to trigger drag
+
+            // lblTitle でネイティブドラッグを発火させる既存コードもリサイズ領域を考慮する
+            lblTitle.MouseDown += (s, e) =>
+            {
+                // lblTitle の座標系 -> 画面 -> フォーム座標に変換
+                var screenPt = lblTitle.PointToScreen(e.Location);
+                var formPt = this.PointToClient(screenPt);
+
+                if (IsPointInResizeZone(formPt))
+                    return;
+
+                // 既存のネイティブドラッグ（HTCAPTION 相当）を発生させる
                 pnlTitleBar.Capture = false;
                 Message msg = Message.Create(pnlTitleBar.Handle, 0x00A1, (IntPtr)0x0002, IntPtr.Zero);
                 this.DefWndProc(ref msg);
@@ -480,15 +600,17 @@ namespace StormworksLuaReplacer
         /// </summary>
         private void MainForm_MouseDown(object? sender, MouseEventArgs e)
         {
-            // タイトルバー上のドラッグはスキップ（ドラッグ機能に任せる）
-            if (e.Y < 30)
-                return;
+            // debug log removed
+
+            // カーソル判定を先に行い、リサイズ開始フラグを設定
+            UpdateResizeCursor(e.Location);
 
             resizeStart = e.Location;
             resizeStartBounds = this.Bounds;
 
-            // リサイズカーソルの判定と設定
-            UpdateResizeCursor(e.Location);
+            // カーソルがリサイズ用になっていればリサイズモードに入る
+            isResizing = this.Cursor != Cursors.Default;
+            // debug log removed
         }
 
         /// <summary>
@@ -496,13 +618,15 @@ namespace StormworksLuaReplacer
         /// </summary>
         private void MainForm_MouseMove(object? sender, MouseEventArgs e)
         {
+            if (e == null) return;
             // フォーム最小化状態では処理しない
             if (this.WindowState == FormWindowState.Minimized)
                 return;
 
-            // リサイズ処理中かどうかを判定（マウスボタンが押下中）
-            if (e.Button == MouseButtons.Left && (resizeStart.X != 0 || resizeStart.Y != 0))
+            // リサイズ処理中かどうかを判定（フラグを使う）
+            if (isResizing && e.Button == MouseButtons.Left)
             {
+                // debug log removed
                 ResizeWindow(e.Location);
             }
             else
@@ -517,6 +641,8 @@ namespace StormworksLuaReplacer
         /// </summary>
         private void MainForm_MouseUp(object? sender, MouseEventArgs e)
         {
+            // debug log removed
+            isResizing = false;
             resizeStart = Point.Empty;
         }
 
@@ -530,16 +656,23 @@ namespace StormworksLuaReplacer
             bool isTop = location.Y < RESIZE_BORDER;
             bool isBottom = location.Y > this.Height - RESIZE_BORDER;
 
+            Cursor newCursor;
             if ((isLeft && isTop) || (isRight && isBottom))
-                this.Cursor = Cursors.SizeNWSE;
+                newCursor = Cursors.SizeNWSE;
             else if ((isRight && isTop) || (isLeft && isBottom))
-                this.Cursor = Cursors.SizeNESW;
+                newCursor = Cursors.SizeNESW;
             else if (isLeft || isRight)
-                this.Cursor = Cursors.SizeWE;
+                newCursor = Cursors.SizeWE;
             else if (isTop || isBottom)
-                this.Cursor = Cursors.SizeNS;
+                newCursor = Cursors.SizeNS;
             else
-                this.Cursor = Cursors.Default;
+                newCursor = Cursors.Default;
+
+            if (this.Cursor != newCursor)
+            {
+                // debug log removed
+                this.Cursor = newCursor;
+            }
         }
 
         /// <summary>
@@ -588,7 +721,69 @@ namespace StormworksLuaReplacer
             if (newWidth < 400) newWidth = 400;
             if (newHeight < 300) newHeight = 300;
 
+            // debug log removed
             this.Bounds = new Rectangle(newLeft, newTop, newWidth, newHeight);
+        }
+
+        // WM_NCHITTEST をオーバーライドしてネイティブのリサイズを有効にする。デバッグ出力も追加。
+        protected override void WndProc(ref Message m)
+        {
+            const int WM_NCHITTEST = 0x0084;
+            const int HTCLIENT = 1;
+            const int HTLEFT = 10;
+            const int HTRIGHT = 11;
+            const int HTTOP = 12;
+            const int HTTOPLEFT = 13;
+            const int HTTOPRIGHT = 14;
+            const int HTBOTTOM = 15;
+            const int HTBOTTOMLEFT = 16;
+            const int HTBOTTOMRIGHT = 17;
+
+            if (m.Msg == WM_NCHITTEST && this.FormBorderStyle == FormBorderStyle.None)
+            {
+                // まずデフォルト処理してからカスタム判定を上書きする
+                base.WndProc(ref m);
+
+                try
+                {
+                    if ((int)m.Result == HTCLIENT)
+                    {
+                        int lParam = m.LParam.ToInt32();
+                        int x = (short)(lParam & 0xFFFF);
+                        int y = (short)((lParam >> 16) & 0xFFFF);
+                        Point clientPoint = this.PointToClient(new Point(x, y));
+
+                        bool left = clientPoint.X <= RESIZE_BORDER;
+                        bool right = clientPoint.X >= this.ClientSize.Width - RESIZE_BORDER;
+                        bool top = clientPoint.Y <= RESIZE_BORDER;
+                        bool bottom = clientPoint.Y >= this.ClientSize.Height - RESIZE_BORDER;
+
+                        if (left && top) m.Result = (IntPtr)HTTOPLEFT;
+                        else if (right && bottom) m.Result = (IntPtr)HTBOTTOMRIGHT;
+                        else if (right && top) m.Result = (IntPtr)HTTOPRIGHT;
+                        else if (left && bottom) m.Result = (IntPtr)HTBOTTOMLEFT;
+                        else if (left) m.Result = (IntPtr)HTLEFT;
+                        else if (right) m.Result = (IntPtr)HTRIGHT;
+                        else if (top) m.Result = (IntPtr)HTTOP;
+                        else if (bottom) m.Result = (IntPtr)HTBOTTOM;
+
+                        // debug log removed
+                    }
+                }
+                catch (Exception)
+                {
+                    // debug log removed
+                }
+                return;
+            }
+
+            base.WndProc(ref m);
+        }
+
+        protected override void OnFormClosed(FormClosedEventArgs e)
+        {
+            base.OnFormClosed(e);
+            // debug resources cleaned up (no-op)
         }
 
         [STAThread]
@@ -627,7 +822,7 @@ namespace StormworksLuaReplacer
 
             var lblDescription = new Label
             {
-                Text = "検出するスクリプトの先頭コメントプレフィックスを設定してください。\n例: \"-- autochanger\" と入力すると、この文字列で始まるスクリプトのみが検出されます。",
+                Text = "検出するスクリプトの先頭コメントプレフィックスを設定してください。\n例: \"-- autochanger\" と入力すると、この文字列で始まるス...",
                 Dock = DockStyle.Fill,
                 AutoSize = true,
                 Padding = new Padding(0, 0, 0, 15)
