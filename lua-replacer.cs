@@ -126,6 +126,41 @@ namespace StormworksLuaReplacer
                 this.DefWndProc(ref msg);
             };
 
+            // MenuStrip
+            var menuStrip = new MenuStrip();
+            var fileMenu = new ToolStripMenuItem("ファイル");
+            var openXmlItem = new ToolStripMenuItem("ビークルXMLを開く...", null, BtnLoadXml_Click);
+            var saveXmlItem = new ToolStripMenuItem("XMLを保存", null, BtnSave_Click);
+            var saveAsXmlItem = new ToolStripMenuItem("名前を付けて保存...", null, BtnSaveAs_Click);
+            var exitItem = new ToolStripMenuItem("終了", null, (s, e) => this.Close());
+            fileMenu.DropDownItems.AddRange(new ToolStripItem[] { openXmlItem, saveXmlItem, saveAsXmlItem, new ToolStripSeparator(), exitItem });
+
+            var editMenu = new ToolStripMenuItem("編集");
+            var loadLuaItem = new ToolStripMenuItem("Luaファイルを読み込む...", null, BtnLoadLuaFile_Click);
+            var replaceItem = new ToolStripMenuItem("置換", null, BtnReplace_Click);
+            editMenu.DropDownItems.AddRange(new ToolStripItem[] { loadLuaItem, replaceItem });
+
+            var toolsMenu = new ToolStripMenuItem("ツール");
+            var settingsItem = new ToolStripMenuItem("設定...", null, BtnSettings_Click);
+            toolsMenu.DropDownItems.Add(settingsItem);
+
+            // Remove image margin from menu items
+            ((ToolStripDropDownMenu)fileMenu.DropDown).ShowImageMargin = false;
+            ((ToolStripDropDownMenu)editMenu.DropDown).ShowImageMargin = false;
+            ((ToolStripDropDownMenu)toolsMenu.DropDown).ShowImageMargin = false;
+
+            menuStrip.Items.AddRange(new ToolStripItem[] { fileMenu, editMenu, toolsMenu });
+
+            // ToolStrip
+            var toolStrip = new ToolStrip { GripStyle = ToolStripGripStyle.Hidden };
+            var openXmlBtn = new ToolStripButton("XMLを開く", null, BtnLoadXml_Click) { Margin = new Padding(5, 1, 0, 2) };
+            var saveBtn = new ToolStripButton("保存", null, BtnSave_Click);
+            var loadLuaBtn = new ToolStripButton("Lua読込", null, BtnLoadLuaFile_Click);
+            var replaceBtn = new ToolStripButton("置換", null, BtnReplace_Click);
+            var settingsBtn = new ToolStripButton("設定", null, BtnSettings_Click);
+            
+            toolStrip.Items.AddRange(new ToolStripItem[] { openXmlBtn, saveBtn, new ToolStripSeparator(), loadLuaBtn, replaceBtn, new ToolStripSeparator(), settingsBtn });
+
 
             this.Text = "Stormworks Lua Script Replacer";
             this.Size = new System.Drawing.Size(1000, 700);
@@ -161,30 +196,28 @@ namespace StormworksLuaReplacer
             {
                 Dock = DockStyle.Fill,
                 ColumnCount = 2,
-                RowCount = 4,
+                RowCount = 3,
                 Padding = new Padding(10)
             };
             mainLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50F));
             mainLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50F));
-            mainLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 50F));
             mainLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 150F));
             mainLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
             mainLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 60F));
 
-            mainLayout.Controls.Add(btnLoadXml, 0, 0);
-            mainLayout.SetColumnSpan(btnLoadXml, 2);
-            mainLayout.Controls.Add(lblFilePath, 0, 1);
+            mainLayout.Controls.Add(lblFilePath, 0, 0);
             mainLayout.SetColumnSpan(lblFilePath, 2);
             var scriptListPanel = new Panel { Dock = DockStyle.Fill, Controls = { lstScripts } };
-            mainLayout.Controls.Add(scriptListPanel, 0, 1);
+            mainLayout.Controls.Add(scriptListPanel, 0, 0);
             mainLayout.SetColumnSpan(scriptListPanel, 2);
-            mainLayout.Controls.Add(grpCurrentScript, 0, 2);
-            mainLayout.Controls.Add(grpNewScript, 1, 2);
-            mainLayout.Controls.Add(pnlButtons, 0, 3);
-            mainLayout.SetColumnSpan(pnlButtons, 2);
+            mainLayout.Controls.Add(grpCurrentScript, 0, 1);
+            mainLayout.Controls.Add(grpNewScript, 1, 1);
 
             this.Controls.Add(mainLayout);
+            this.Controls.Add(toolStrip);
+            this.Controls.Add(menuStrip);
             this.Controls.Add(pnlTitleBar); // Add title bar to form
+            this.MainMenuStrip = menuStrip;
         }
 
         private void BtnLoadXml_Click(object? sender, EventArgs e)
