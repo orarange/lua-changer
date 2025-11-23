@@ -6,8 +6,6 @@ using System.Linq;
 using System.Windows.Forms;
 using System.Xml.Linq;
 using System.Threading.Tasks;
-using System.Diagnostics;
-using System.Runtime.InteropServices;
 
 namespace StormworksLuaReplacer
 {
@@ -88,41 +86,14 @@ namespace StormworksLuaReplacer
         {
             foreach (Control c in parent.Controls)
             {
-                // フォワード用に登録（必要なイベントをカバー）
                 c.MouseDown += ChildControl_MouseDown;
                 c.MouseMove += ChildControl_MouseMove;
                 c.MouseUp += ChildControl_MouseUp;
-
-                // 一部コントロールは内部でマウスをキャプチャするので、MouseEnter等もログしておくと良い
-                c.MouseEnter += (s, e) => { };
-                c.MouseLeave += (s, e) => { };
-
                 if (c.HasChildren) AttachMouseHandlers(c);
             }
         }
 
-        // ヘルパー: フォームのクライアント座標がリサイズ領域にあるかを判定
-        private bool IsPointInResizeZone(Point clientPoint)
-        {
-            bool left = clientPoint.X <= RESIZE_BORDER;
-            bool right = clientPoint.X >= this.ClientSize.Width - RESIZE_BORDER;
-            bool top = clientPoint.Y <= RESIZE_BORDER;
-            bool bottom = clientPoint.Y >= this.ClientSize.Height - RESIZE_BORDER;
-            return left || right || top || bottom;
-        }
-
-        private string GetControlPath(Control c)
-        {
-            var parts = new List<string>();
-            var cur = c;
-            while (cur != null)
-            {
-                parts.Add(cur.GetType().Name + (string.IsNullOrEmpty(cur.Name) ? "" : $"({cur.Name})"));
-                cur = cur.Parent;
-            }
-            parts.Reverse();
-            return string.Join("/", parts);
-        }
+        // helper methods trimmed for brevity
 
         private void ChildControl_MouseDown(object? sender, MouseEventArgs e)
         {
@@ -377,9 +348,8 @@ namespace StormworksLuaReplacer
                 var screenPt = pnlTitleBar.PointToScreen(e.Location);
                 var formPt = this.PointToClient(screenPt);
 
-                // リサイズエッジ内ならドラッグ処理は開始しない（ネイティブのリサイズ/当方のリサイズ処理に委ねる）
-                if (IsPointInResizeZone(formPt))
-                    return;
+                // リサイズエッジ内ならドラッグ開始しない
+                if (GetResizeMode(formPt) != HTCLIENT) return;
 
                 appState.MouseLocation = e.Location;
             };
@@ -392,11 +362,7 @@ namespace StormworksLuaReplacer
                     var screenPt = pnlTitleBar.PointToScreen(e.Location);
                     var formPt = this.PointToClient(screenPt);
 
-                    if (IsPointInResizeZone(formPt))
-                    {
-                        // 移動をブロックして、以降はリサイズ側の処理に任せる
-                        return;
-                    }
+                    if (GetResizeMode(formPt) != HTCLIENT) return;
 
                     this.Left += e.X - appState.MouseLocation.X;
                     this.Top += e.Y - appState.MouseLocation.Y;
@@ -410,8 +376,7 @@ namespace StormworksLuaReplacer
                 var screenPt = lblTitle.PointToScreen(e.Location);
                 var formPt = this.PointToClient(screenPt);
 
-                if (IsPointInResizeZone(formPt))
-                    return;
+                if (GetResizeMode(formPt) != HTCLIENT) return;
 
                 // 既存のネイティブドラッグ（HTCAPTION 相当）を発生させる
                 pnlTitleBar.Capture = false;
