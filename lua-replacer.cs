@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Drawing;
 using System.IO;
 using System.Linq;
 using System.Windows.Forms;
@@ -11,28 +12,151 @@ namespace StormworksLuaReplacer
     {
         private XDocument? vehicleXml;
         private string? currentFilePath;
-        private List<LuaScriptNode> luaScripts;
-        private FileSystemWatcher fileWatcher;
+        private readonly List<LuaScriptNode> luaScripts = new List<LuaScriptNode>();
+        private readonly FileSystemWatcher fileWatcher;
         private bool isReloading = false;
         private string scriptDetectionPrefix = "-- autochanger";
 
+        // UI Controls
+        private readonly Label lblFilePath;
+        private readonly ListBox lstScripts;
+        private readonly TextBox txtCurrentScript;
+        private readonly TextBox txtNewScript;
+
+        // For custom title bar
+        private Point mouseLocation;
+
         public MainForm()
         {
+            // Store controls in fields for direct access
+            lblFilePath = new Label { Text = "ファイル: 未選択", Dock = DockStyle.Fill, AutoSize = false, TextAlign = System.Drawing.ContentAlignment.MiddleLeft };
+            lstScripts = new ListBox { Dock = DockStyle.Fill, Height = 300 };
+            txtCurrentScript = new TextBox { Multiline = true, Dock = DockStyle.Fill, ScrollBars = ScrollBars.Both, Font = new System.Drawing.Font("Consolas", 10), ReadOnly = true };
+            txtNewScript = new TextBox { Multiline = true, Dock = DockStyle.Fill, ScrollBars = ScrollBars.Both, Font = new System.Drawing.Font("Consolas", 10) };
+            
             InitializeComponent();
-            luaScripts = new List<LuaScriptNode>();
-            fileWatcher = new FileSystemWatcher();
+            
+            fileWatcher = new FileSystemWatcher { NotifyFilter = NotifyFilters.LastWrite };
             fileWatcher.Changed += FileWatcher_Changed;
-            fileWatcher.NotifyFilter = NotifyFilters.LastWrite;
         }
 
         private void InitializeComponent()
         {
-            // フォームの初期化
+            this.FormBorderStyle = FormBorderStyle.None; // Remove default title bar
+            this.Text = ""; // Empty text for custom title bar
+
+            // Custom Title Bar Panel
+            var pnlTitleBar = new Panel
+            {
+                Dock = DockStyle.Top,
+                Height = 30,
+                BackColor = System.Drawing.Color.FromArgb(45, 45, 48) // Dark gray
+            };
+
+            var lblTitle = new Label
+            {
+                Text = "Stormworks Lua Script Replacer",
+                ForeColor = System.Drawing.Color.White,
+                Location = new System.Drawing.Point(10, 8)
+            };
+
+            var btnMaximize = new Button
+            {
+                Text = "🗖", // Maximize symbol
+                Dock = DockStyle.Right,
+                Width = 45,
+                FlatStyle = FlatStyle.Flat,
+                ForeColor = System.Drawing.Color.White,
+                BackColor = System.Drawing.Color.FromArgb(45, 45, 48)
+            };
+            btnMaximize.FlatAppearance.BorderSize = 0;
+            btnMaximize.FlatAppearance.MouseOverBackColor = System.Drawing.Color.FromArgb(63, 63, 70);
+
+            var btnMinimize = new Button
+            {
+                Text = "—", // Minimize symbol
+                Dock = DockStyle.Right,
+                Width = 45,
+                FlatStyle = FlatStyle.Flat,
+                ForeColor = System.Drawing.Color.White,
+                BackColor = System.Drawing.Color.FromArgb(45, 45, 48)
+            };
+
+            var btnClose = new Button
+            {
+                Text = "X",
+                Dock = DockStyle.Right,
+                Width = 45,
+                FlatStyle = FlatStyle.Flat,
+                ForeColor = System.Drawing.Color.White,
+                BackColor = System.Drawing.Color.FromArgb(45, 45, 48)
+            };
+            btnClose.FlatAppearance.BorderSize = 0;
+            btnClose.FlatAppearance.MouseOverBackColor = System.Drawing.Color.FromArgb(212, 63, 63); // Red on hover
+
+            btnMinimize.FlatAppearance.BorderSize = 0;
+            btnMinimize.FlatAppearance.MouseOverBackColor = System.Drawing.Color.FromArgb(63, 63, 70);
+
+            pnlTitleBar.Controls.Add(lblTitle);
+            pnlTitleBar.Controls.Add(btnMaximize);
+            pnlTitleBar.Controls.Add(btnMinimize);
+            pnlTitleBar.Controls.Add(btnClose);
+
+            // Event Handlers for custom title bar
+            btnClose.Click += (s, e) => this.Close();
+            btnMinimize.Click += (s, e) => this.WindowState = FormWindowState.Minimized;
+            btnMaximize.Click += (s, e) => {
+                this.WindowState = this.WindowState == FormWindowState.Maximized ? FormWindowState.Normal : FormWindowState.Maximized;
+                btnMaximize.Text = this.WindowState == FormWindowState.Maximized ? "🗗" : "🗖"; // Restore/Maximize symbol
+            };
+
+            // Drag functionality
+            pnlTitleBar.MouseDown += (s, e) => mouseLocation = e.Location;
+            pnlTitleBar.MouseMove += (s, e) => {
+                if (e.Button == MouseButtons.Left)
+                {
+                    this.Left += e.X - mouseLocation.X;
+                    this.Top += e.Y - mouseLocation.Y;
+                }
+            };
+            lblTitle.MouseDown += (s, e) => {
+                // Propagate mouse down to parent to trigger drag
+                pnlTitleBar.Capture = false;
+                Message msg = Message.Create(pnlTitleBar.Handle, 0x00A1, (IntPtr)0x0002, IntPtr.Zero);
+                this.DefWndProc(ref msg);
+            };
+
+
             this.Text = "Stormworks Lua Script Replacer";
             this.Size = new System.Drawing.Size(1000, 700);
             this.StartPosition = FormStartPosition.CenterScreen;
 
-            // レイアウト
+            var btnLoadXml = new Button { Text = "ビークルXMLを開く", Dock = DockStyle.Fill, Height = 40 };
+            btnLoadXml.Click += BtnLoadXml_Click;
+            
+            lstScripts.SelectedIndexChanged += LstScripts_SelectedIndexChanged;
+
+            var grpCurrentScript = new GroupBox { Text = "現在のスクリプト", Dock = DockStyle.Fill, Controls = { txtCurrentScript } };
+            var grpNewScript = new GroupBox { Text = "新しいスクリプト", Dock = DockStyle.Fill, Controls = { txtNewScript } };
+
+            var btnLoadLuaFile = new Button { Text = "Luaファイルを読み込む", Width = 150, Height = 40 };
+            btnLoadLuaFile.Click += BtnLoadLuaFile_Click;
+
+            var btnReplace = new Button { Text = "置換", Width = 100, Height = 40 };
+            btnReplace.Click += BtnReplace_Click;
+
+            var btnSave = new Button { Text = "XMLを保存", Width = 120, Height = 40 };
+            btnSave.Click += BtnSave_Click;
+
+            var btnSaveAs = new Button { Text = "名前を付けて保存", Width = 150, Height = 40 };
+            btnSaveAs.Click += BtnSaveAs_Click;
+
+            var btnSettings = new Button { Text = "検出設定", Width = 100, Height = 40 };
+            btnSettings.Click += BtnSettings_Click;
+
+            var pnlButtons = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.LeftToRight };
+            pnlButtons.Controls.AddRange(new Control[] { btnLoadLuaFile, btnReplace, btnSave, btnSaveAs, btnSettings });
+
             var mainLayout = new TableLayoutPanel
             {
                 Dock = DockStyle.Fill,
@@ -40,168 +164,51 @@ namespace StormworksLuaReplacer
                 RowCount = 4,
                 Padding = new Padding(10)
             };
-
-            // ファイル選択ボタン
-            var btnLoadXml = new Button
-            {
-                Text = "ビークルXMLを開く",
-                Dock = DockStyle.Fill,
-                Height = 40
-            };
-            btnLoadXml.Click += BtnLoadXml_Click;
-
-            // 現在のファイルパス表示
-            var lblFilePath = new Label
-            {
-                Text = "ファイル: 未選択",
-                Dock = DockStyle.Fill,
-                AutoSize = false,
-                TextAlign = System.Drawing.ContentAlignment.MiddleLeft
-            };
-            lblFilePath.Name = "lblFilePath";
-
-            // Luaスクリプト一覧
-            var lstScripts = new ListBox
-            {
-                Dock = DockStyle.Fill,
-                Height = 300
-            };
-            lstScripts.Name = "lstScripts";
-            lstScripts.SelectedIndexChanged += LstScripts_SelectedIndexChanged;
-
-            // スクリプトプレビュー（左）
-            var grpCurrentScript = new GroupBox
-            {
-                Text = "現在のスクリプト",
-                Dock = DockStyle.Fill
-            };
-            var txtCurrentScript = new TextBox
-            {
-                Multiline = true,
-                Dock = DockStyle.Fill,
-                ScrollBars = ScrollBars.Both,
-                Font = new System.Drawing.Font("Consolas", 10),
-                ReadOnly = true
-            };
-            txtCurrentScript.Name = "txtCurrentScript";
-            grpCurrentScript.Controls.Add(txtCurrentScript);
-
-            // 新しいスクリプト入力（右）
-            var grpNewScript = new GroupBox
-            {
-                Text = "新しいスクリプト",
-                Dock = DockStyle.Fill
-            };
-            var txtNewScript = new TextBox
-            {
-                Multiline = true,
-                Dock = DockStyle.Fill,
-                ScrollBars = ScrollBars.Both,
-                Font = new System.Drawing.Font("Consolas", 10)
-            };
-            txtNewScript.Name = "txtNewScript";
-            grpNewScript.Controls.Add(txtNewScript);
-
-            // ボタンパネル
-            var pnlButtons = new FlowLayoutPanel
-            {
-                Dock = DockStyle.Fill,
-                FlowDirection = FlowDirection.LeftToRight
-            };
-
-            var btnLoadLuaFile = new Button
-            {
-                Text = "Luaファイルを読み込む",
-                Width = 150,
-                Height = 40
-            };
-            btnLoadLuaFile.Click += BtnLoadLuaFile_Click;
-
-            var btnReplace = new Button
-            {
-                Text = "置換",
-                Width = 100,
-                Height = 40
-            };
-            btnReplace.Click += BtnReplace_Click;
-
-            var btnSave = new Button
-            {
-                Text = "XMLを保存",
-                Width = 120,
-                Height = 40
-            };
-            btnSave.Click += BtnSave_Click;
-
-            var btnSaveAs = new Button
-            {
-                Text = "名前を付けて保存",
-                Width = 150,
-                Height = 40
-            };
-            btnSaveAs.Click += BtnSaveAs_Click;
-
-            var btnSettings = new Button
-            {
-                Text = "検出設定",
-                Width = 100,
-                Height = 40
-            };
-            btnSettings.Click += BtnSettings_Click;
-
-            pnlButtons.Controls.AddRange(new Control[] { btnLoadLuaFile, btnReplace, btnSave, btnSaveAs, btnSettings });
-
-            // レイアウト設定
-            mainLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
-            mainLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
-            
-            mainLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 50));
-            mainLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 150));
-            mainLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-            mainLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 60));
+            mainLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50F));
+            mainLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50F));
+            mainLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 50F));
+            mainLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 150F));
+            mainLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
+            mainLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 60F));
 
             mainLayout.Controls.Add(btnLoadXml, 0, 0);
             mainLayout.SetColumnSpan(btnLoadXml, 2);
-
             mainLayout.Controls.Add(lblFilePath, 0, 1);
             mainLayout.SetColumnSpan(lblFilePath, 2);
-
-            var scriptListPanel = new Panel { Dock = DockStyle.Fill };
-            scriptListPanel.Controls.Add(lstScripts);
+            var scriptListPanel = new Panel { Dock = DockStyle.Fill, Controls = { lstScripts } };
             mainLayout.Controls.Add(scriptListPanel, 0, 1);
             mainLayout.SetColumnSpan(scriptListPanel, 2);
-
             mainLayout.Controls.Add(grpCurrentScript, 0, 2);
             mainLayout.Controls.Add(grpNewScript, 1, 2);
-
             mainLayout.Controls.Add(pnlButtons, 0, 3);
             mainLayout.SetColumnSpan(pnlButtons, 2);
 
             this.Controls.Add(mainLayout);
+            this.Controls.Add(pnlTitleBar); // Add title bar to form
         }
 
-        private void BtnLoadXml_Click(object sender, EventArgs e)
+        private void BtnLoadXml_Click(object? sender, EventArgs e)
         {
-            using (var openFileDialog = new OpenFileDialog())
+            using var openFileDialog = new OpenFileDialog
             {
-                openFileDialog.Filter = "XML files (*.xml)|*.xml|All files (*.*)|*.*";
-                openFileDialog.Title = "ビークルXMLファイルを選択";
+                Filter = "XML files (*.xml)|*.xml|All files (*.*)|*.*",
+                Title = "ビークルXMLファイルを選択"
+            };
 
-                if (openFileDialog.ShowDialog() == DialogResult.OK)
+            if (openFileDialog.ShowDialog() == DialogResult.OK)
+            {
+                try
                 {
-                    try
-                    {
-                        currentFilePath = openFileDialog.FileName;
-                        LoadXmlFile();
-                        SetupFileWatcher();
-                        MessageBox.Show($"XMLファイルを読み込みました。\n{luaScripts.Count}個のLuaスクリプトが見つかりました。",
-                            "成功", MessageBoxButtons.OK, MessageBoxIcon.Information);
-                    }
-                    catch (Exception ex)
-                    {
-                        MessageBox.Show($"XMLファイルの読み込みに失敗しました:\n{ex.Message}",
-                            "エラー", MessageBoxButtons.OK, MessageBoxIcon.Error);
-                    }
+                    currentFilePath = openFileDialog.FileName;
+                    LoadXmlFile();
+                    SetupFileWatcher();
+                    MessageBox.Show($"XMLファイルを読み込みました。\n{luaScripts.Count}個のLuaスクリプトが見つかりました。",
+                        "成功", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                }
+                catch (Exception ex)
+                {
+                    MessageBox.Show($"XMLファイルの読み込みに失敗しました:\n{ex.Message}",
+                        "エラー", MessageBoxButtons.OK, MessageBoxIcon.Error);
                 }
             }
         }
@@ -211,199 +218,117 @@ namespace StormworksLuaReplacer
             luaScripts.Clear();
             if (vehicleXml == null) return;
 
-            // XMLからscript属性を持つすべての要素を検索
             var scriptElements = vehicleXml.Descendants()
-                .Where(e => e.Attribute("script") != null && 
-                            !string.IsNullOrWhiteSpace(e.Attribute("script")?.Value))
-                .ToList();
+                .Where(e => e.Attribute("script")?.Value.Trim().StartsWith(scriptDetectionPrefix, StringComparison.OrdinalIgnoreCase) ?? false);
 
-            int index = 1;
-            foreach (var element in scriptElements)
+            luaScripts.AddRange(scriptElements.Select((element, index) =>
             {
-                var scriptAttribute = element.Attribute("script");
-                if (scriptAttribute == null) continue;
-                
+                var scriptAttribute = element.Attribute("script")!;
                 var scriptContent = scriptAttribute.Value;
-                
-                // スクリプトの最初の2行を取得
                 var lines = scriptContent.Split(new[] { '\n', '\r' }, StringSplitOptions.RemoveEmptyEntries);
-                var firstLine = lines.Length > 0 ? lines[0].Trim() : "";
-                var secondLine = lines.Length > 1 ? lines[1].Trim() : "";
                 
-                // -- autochangerで始まるコメントがあるスクリプトのみを対象とする
-                if (!firstLine.StartsWith(scriptDetectionPrefix, StringComparison.OrdinalIgnoreCase))
+                string identifier = lines.Length > 0 ? lines[0].Substring(2).Trim() : "Unknown Script";
+                if (lines.Length > 1 && lines[1].Trim().StartsWith("--"))
                 {
-                    continue; // 指定されたプレフィックスがない場合はスキップ
+                    identifier += " " + lines[1].Substring(2).Trim();
                 }
 
-                // 識別子を取得: 1行目と2行目のコメントを組み合わせる
-                string identifier = firstLine.Substring(2).Trim(); // "--"を除去
-                
-                // 2行目もコメントの場合は追加
-                if (secondLine.StartsWith("--"))
-                {
-                    string secondComment = secondLine.Substring(2).Trim();
-                    identifier += " " + secondComment;
-                }
-                
-                var luaScript = new LuaScriptNode
+                return new LuaScriptNode
                 {
                     Element = element,
                     Attribute = scriptAttribute,
-                    Index = index++,
+                    Index = index + 1,
                     Script = scriptContent,
-                    NodePath = GetXPath(element),
-                    DisplayName = identifier // "autochanger helicon test15" など
+                    DisplayName = identifier
                 };
-
-                luaScripts.Add(luaScript);
-            }
-        }
-
-        private string GetXPath(XElement element)
-        {
-            if (element == null) return "";
-            
-            var path = element.Name.LocalName;
-            var current = element;
-            
-            while (current.Parent != null)
-            {
-                current = current.Parent;
-                var siblings = current.Elements(element.Name).ToList();
-                if (siblings.Count > 1)
-                {
-                    int index = siblings.IndexOf(element) + 1;
-                    path = $"{current.Name.LocalName}/{element.Name.LocalName}[{index}]";
-                }
-                else
-                {
-                    path = $"{current.Name.LocalName}/{path}";
-                }
-            }
-            
-            return path;
+            }));
         }
 
         private void UpdateUI()
         {
-            var lblFilePath = this.Controls.Find("lblFilePath", true).FirstOrDefault() as Label;
-            if (lblFilePath != null)
+            lblFilePath.Text = $"ファイル: {currentFilePath}";
+            
+            lstScripts.Items.Clear();
+            foreach (var script in luaScripts)
             {
-                lblFilePath.Text = $"ファイル: {currentFilePath}";
-            }
-
-            var lstScripts = this.Controls.Find("lstScripts", true).FirstOrDefault() as ListBox;
-            if (lstScripts != null)
-            {
-                lstScripts.Items.Clear();
-                foreach (var script in luaScripts)
-                {
-                    lstScripts.Items.Add(script.DisplayName);
-                }
+                lstScripts.Items.Add(script.DisplayName);
             }
         }
 
-        private void LstScripts_SelectedIndexChanged(object sender, EventArgs e)
+        private void LstScripts_SelectedIndexChanged(object? sender, EventArgs e)
         {
-            var lstScripts = sender as ListBox;
-            if (lstScripts == null || lstScripts.SelectedIndex < 0) return;
+            if (lstScripts.SelectedIndex < 0) return;
 
             var selectedScript = luaScripts[lstScripts.SelectedIndex];
-            
-            var txtCurrentScript = this.Controls.Find("txtCurrentScript", true).FirstOrDefault() as TextBox;
-            if (txtCurrentScript != null)
-            {
-                txtCurrentScript.Text = selectedScript.Script;
-            }
+            txtCurrentScript.Text = selectedScript.Script;
 
-            var txtNewScript = this.Controls.Find("txtNewScript", true).FirstOrDefault() as TextBox;
-            if (txtNewScript != null && string.IsNullOrEmpty(txtNewScript.Text))
+            if (string.IsNullOrEmpty(txtNewScript.Text))
             {
                 txtNewScript.Text = selectedScript.Script;
             }
         }
 
-        private void BtnLoadLuaFile_Click(object sender, EventArgs e)
+        private void BtnLoadLuaFile_Click(object? sender, EventArgs e)
         {
-            using (var openFileDialog = new OpenFileDialog())
+            using var openFileDialog = new OpenFileDialog
             {
-                openFileDialog.Filter = "Lua files (*.lua)|*.lua|Text files (*.txt)|*.txt|All files (*.*)|*.*";
-                openFileDialog.Title = "Luaスクリプトファイルを選択";
-
-                if (openFileDialog.ShowDialog() == DialogResult.OK)
+                Filter = "Lua files (*.lua)|*.lua|Text files (*.txt)|*.txt|All files (*.*)|*.*",
+                Title = "Luaスクリプトファイルを選択"
+            };
+            
+            if (openFileDialog.ShowDialog() == DialogResult.OK)
+            {
+                try
                 {
-                    try
-                    {
-                        string luaContent = File.ReadAllText(openFileDialog.FileName);
-                        var txtNewScript = this.Controls.Find("txtNewScript", true).FirstOrDefault() as TextBox;
-                        if (txtNewScript != null)
-                        {
-                            txtNewScript.Text = luaContent;
-                        }
-                    }
-                    catch (Exception ex)
-                    {
-                        MessageBox.Show($"Luaファイルの読み込みに失敗しました:\n{ex.Message}",
-                            "エラー", MessageBoxButtons.OK, MessageBoxIcon.Error);
-                    }
+                    txtNewScript.Text = File.ReadAllText(openFileDialog.FileName);
+                }
+                catch (Exception ex)
+                {
+                    MessageBox.Show($"Luaファイルの読み込みに失敗しました:\n{ex.Message}",
+                        "エラー", MessageBoxButtons.OK, MessageBoxIcon.Error);
                 }
             }
         }
 
-        private void BtnReplace_Click(object sender, EventArgs e)
+        private void BtnReplace_Click(object? sender, EventArgs e)
         {
-            var lstScripts = this.Controls.Find("lstScripts", true).FirstOrDefault() as ListBox;
-            if (lstScripts == null || lstScripts.SelectedIndex < 0)
+            if (lstScripts.SelectedIndex < 0)
             {
-                MessageBox.Show("置換するスクリプトを選択してください。", "警告", 
-                    MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                MessageBox.Show("置換するスクリプトを選択してください。", "警告", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 return;
             }
 
-            var txtNewScript = this.Controls.Find("txtNewScript", true).FirstOrDefault() as TextBox;
-            if (txtNewScript == null || string.IsNullOrWhiteSpace(txtNewScript.Text))
+            if (string.IsNullOrWhiteSpace(txtNewScript.Text))
             {
-                MessageBox.Show("新しいスクリプトを入力してください。", "警告",
-                    MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                MessageBox.Show("新しいスクリプトを入力してください。", "警告", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 return;
             }
 
-            var selectedIndex = lstScripts.SelectedIndex;
-            var selectedScript = luaScripts[selectedIndex];
+            var selectedScript = luaScripts[lstScripts.SelectedIndex];
             selectedScript.Attribute.Value = txtNewScript.Text;
             selectedScript.Script = txtNewScript.Text;
-
-            // 現在のスクリプト表示を更新
-            var txtCurrentScript = this.Controls.Find("txtCurrentScript", true).FirstOrDefault() as TextBox;
-            if (txtCurrentScript != null)
-            {
-                txtCurrentScript.Text = txtNewScript.Text;
-            }
+            txtCurrentScript.Text = txtNewScript.Text;
 
             MessageBox.Show("スクリプトを置換しました。保存するには「XMLを保存」ボタンをクリックしてください。",
                 "成功", MessageBoxButtons.OK, MessageBoxIcon.Information);
         }
 
-        private void BtnSave_Click(object sender, EventArgs e)
+        private void BtnSave_Click(object? sender, EventArgs e)
         {
             if (vehicleXml == null || string.IsNullOrEmpty(currentFilePath))
             {
-                MessageBox.Show("XMLファイルが読み込まれていません。", "警告",
-                    MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                MessageBox.Show("XMLファイルが読み込まれていません。", "警告", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 return;
             }
 
             try
             {
                 vehicleXml.Save(currentFilePath);
-                MessageBox.Show("XMLファイルを保存しました。", "成功",
-                    MessageBoxButtons.OK, MessageBoxIcon.Information);
+                MessageBox.Show("XMLファイルを保存しました。", "成功", MessageBoxButtons.OK, MessageBoxIcon.Information);
             }
             catch (Exception ex)
             {
-                MessageBox.Show($"XMLファイルの保存に失敗しました:\n{ex.Message}",
-                    "エラー", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                MessageBox.Show($"XMLファイルの保存に失敗しました:\n{ex.Message}", "エラー", MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
         }
 
@@ -428,32 +353,25 @@ namespace StormworksLuaReplacer
         private void FileWatcher_Changed(object sender, FileSystemEventArgs e)
         {
             if (isReloading) return;
-
             isReloading = true;
             
-            // UIスレッドで実行
-            this.Invoke(new Action(() =>
+            this.Invoke((Action)(() =>
             {
                 try
                 {
-                    // ファイルが書き込み中でないか確認するために少し待機
                     System.Threading.Thread.Sleep(100);
                     
-                    var lstScripts = this.Controls.Find("lstScripts", true).FirstOrDefault() as ListBox;
-                    int selectedIndex = lstScripts?.SelectedIndex ?? -1;
-
+                    int selectedIndex = lstScripts.SelectedIndex;
                     LoadXmlFile();
 
-                    // 以前の選択状態を復元
-                    if (lstScripts != null && selectedIndex >= 0 && selectedIndex < luaScripts.Count)
+                    if (selectedIndex >= 0 && selectedIndex < lstScripts.Items.Count)
                     {
                         lstScripts.SelectedIndex = selectedIndex;
                     }
                 }
                 catch (Exception ex)
                 {
-                    MessageBox.Show($"ファイルの再読み込みに失敗しました:\n{ex.Message}",
-                        "エラー", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                    MessageBox.Show($"ファイルの再読み込みに失敗しました:\n{ex.Message}", "エラー", MessageBoxButtons.OK, MessageBoxIcon.Error);
                 }
                 finally
                 {
@@ -462,35 +380,36 @@ namespace StormworksLuaReplacer
             }));
         }
 
-        private void BtnSaveAs_Click(object sender, EventArgs e)
+        private void BtnSaveAs_Click(object? sender, EventArgs e)
         {
             if (vehicleXml == null)
             {
-                MessageBox.Show("XMLファイルが読み込まれていません。", "警告",
-                    MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                MessageBox.Show("XMLファイルが読み込まれていません。", "警告", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 return;
             }
 
-            using (var saveFileDialog = new SaveFileDialog())
+            using var saveFileDialog = new SaveFileDialog
             {
-                saveFileDialog.Filter = "XML files (*.xml)|*.xml|All files (*.*)|*.*";
-                saveFileDialog.Title = "XMLファイルを保存";
-                saveFileDialog.FileName = Path.GetFileName(currentFilePath);
-
-                if (saveFileDialog.ShowDialog() == DialogResult.OK)
+                Filter = "XML files (*.xml)|*.xml|All files (*.*)|*.*",
+                Title = "XMLファイルを保存",
+                FileName = Path.GetFileName(currentFilePath)
+            };
+            
+            if (saveFileDialog.ShowDialog() == DialogResult.OK)
+            {
+                var fileName = saveFileDialog.FileName;
+                if (!string.IsNullOrEmpty(fileName))
                 {
                     try
                     {
-                        vehicleXml.Save(saveFileDialog.FileName);
-                        currentFilePath = saveFileDialog.FileName;
+                        vehicleXml.Save(fileName);
+                        currentFilePath = fileName;
                         UpdateUI();
-                        MessageBox.Show("XMLファイルを保存しました。", "成功",
-                            MessageBoxButtons.OK, MessageBoxIcon.Information);
+                        MessageBox.Show("XMLファイルを保存しました。", "成功", MessageBoxButtons.OK, MessageBoxIcon.Information);
                     }
                     catch (Exception ex)
                     {
-                        MessageBox.Show($"XMLファイルの保存に失敗しました:\n{ex.Message}",
-                            "エラー", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                        MessageBox.Show($"XMLファイルの保存に失敗しました:\n{ex.Message}", "エラー", MessageBoxButtons.OK, MessageBoxIcon.Error);
                     }
                 }
             }
@@ -498,20 +417,17 @@ namespace StormworksLuaReplacer
 
         private void BtnSettings_Click(object? sender, EventArgs e)
         {
-            using (var settingsDialog = new SettingsDialog(scriptDetectionPrefix))
+            using var settingsDialog = new SettingsDialog(scriptDetectionPrefix);
+            if (settingsDialog.ShowDialog() == DialogResult.OK)
             {
-                if (settingsDialog.ShowDialog() == DialogResult.OK)
+                scriptDetectionPrefix = settingsDialog.DetectionPrefix;
+                
+                if (vehicleXml != null)
                 {
-                    scriptDetectionPrefix = settingsDialog.DetectionPrefix;
-                    
-                    // 設定変更後、スクリプトを再検出
-                    if (vehicleXml != null)
-                    {
-                        ExtractLuaScripts();
-                        UpdateUI();
-                        MessageBox.Show($"検出条件を更新しました。\n{luaScripts.Count}個のスクリプトが見つかりました。",
-                            "成功", MessageBoxButtons.OK, MessageBoxIcon.Information);
-                    }
+                    ExtractLuaScripts();
+                    UpdateUI();
+                    MessageBox.Show($"検出条件を更新しました。\n{luaScripts.Count}個のスクリプトが見つかりました。",
+                        "成功", MessageBoxButtons.OK, MessageBoxIcon.Information);
                 }
             }
         }
@@ -532,23 +448,17 @@ namespace StormworksLuaReplacer
         public int Index { get; set; }
         public string Script { get; set; } = string.Empty;
         public string DisplayName { get; set; } = string.Empty;
-        public string NodePath { get; set; } = string.Empty;
     }
 
     public class SettingsDialog : Form
     {
-        private TextBox txtPrefix;
+        private readonly TextBox txtPrefix;
         public string DetectionPrefix { get; private set; }
 
         public SettingsDialog(string currentPrefix)
         {
             DetectionPrefix = currentPrefix;
-            txtPrefix = new TextBox();
-            InitializeDialog();
-        }
-
-        private void InitializeDialog()
-        {
+            
             this.Text = "スクリプト検出設定";
             this.Size = new System.Drawing.Size(500, 200);
             this.StartPosition = FormStartPosition.CenterParent;
@@ -556,39 +466,12 @@ namespace StormworksLuaReplacer
             this.MaximizeBox = false;
             this.MinimizeBox = false;
 
-            var mainLayout = new TableLayoutPanel
-            {
-                Dock = DockStyle.Fill,
-                ColumnCount = 1,
-                RowCount = 3,
-                Padding = new Padding(15)
-            };
-
-            mainLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-            mainLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-            mainLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 50));
-
-            // 説明ラベル
             var lblDescription = new Label
             {
                 Text = "検出するスクリプトの先頭コメントプレフィックスを設定してください。\n例: \"-- autochanger\" と入力すると、この文字列で始まるスクリプトのみが検出されます。",
                 Dock = DockStyle.Fill,
                 AutoSize = true,
                 Padding = new Padding(0, 0, 0, 15)
-            };
-
-            // プレフィックス入力
-            var pnlInput = new Panel
-            {
-                Dock = DockStyle.Fill,
-                Height = 35
-            };
-
-            var lblPrefix = new Label
-            {
-                Text = "検出プレフィックス:",
-                AutoSize = true,
-                Location = new System.Drawing.Point(0, 8)
             };
 
             txtPrefix = new TextBox
@@ -599,47 +482,41 @@ namespace StormworksLuaReplacer
                 Font = new System.Drawing.Font("Consolas", 10)
             };
 
-            pnlInput.Controls.Add(lblPrefix);
+            var pnlInput = new Panel { Dock = DockStyle.Fill, Height = 35 };
+            pnlInput.Controls.Add(new Label { Text = "検出プレフィックス:", AutoSize = true, Location = new System.Drawing.Point(0, 8) });
             pnlInput.Controls.Add(txtPrefix);
 
-            // ボタンパネル
-            var pnlButtons = new FlowLayoutPanel
-            {
-                Dock = DockStyle.Fill,
-                FlowDirection = FlowDirection.RightToLeft,
-                Padding = new Padding(0, 10, 0, 0)
-            };
-
-            var btnOK = new Button
-            {
-                Text = "OK",
-                DialogResult = DialogResult.OK,
-                Width = 80,
-                Height = 30
-            };
+            var btnOK = new Button { Text = "OK", DialogResult = DialogResult.OK, Width = 80, Height = 30 };
             btnOK.Click += (s, e) => 
             {
                 if (string.IsNullOrWhiteSpace(txtPrefix.Text))
                 {
-                    MessageBox.Show("プレフィックスを入力してください。", "警告",
-                        MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                    return;
+                    MessageBox.Show("プレフィックスを入力してください。", "警告", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    this.DialogResult = DialogResult.None; // Keep dialog open
                 }
-                DetectionPrefix = txtPrefix.Text;
-                this.Close();
+                else
+                {
+                    DetectionPrefix = txtPrefix.Text;
+                }
             };
 
-            var btnCancel = new Button
-            {
-                Text = "キャンセル",
-                DialogResult = DialogResult.Cancel,
-                Width = 80,
-                Height = 30
-            };
+            var btnCancel = new Button { Text = "キャンセル", DialogResult = DialogResult.Cancel, Width = 80, Height = 30 };
 
+            var pnlButtons = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.RightToLeft, Padding = new Padding(0, 10, 0, 0) };
             pnlButtons.Controls.Add(btnCancel);
             pnlButtons.Controls.Add(btnOK);
 
+            var mainLayout = new TableLayoutPanel
+            {
+                Dock = DockStyle.Fill,
+                ColumnCount = 1,
+                RowCount = 3,
+                Padding = new Padding(15)
+            };
+            mainLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            mainLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            mainLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 50F));
+            
             mainLayout.Controls.Add(lblDescription, 0, 0);
             mainLayout.Controls.Add(pnlInput, 0, 1);
             mainLayout.Controls.Add(pnlButtons, 0, 2);
