@@ -68,8 +68,7 @@ namespace StormworksLuaReplacer
             }
         }
 
-        private void ChildControl_MouseDown(object? sender, MouseEventArgs e)
-        {
+        private void ChildControl_MouseDown(object? sender, MouseEventArgs e){
             var ctrl = sender as Control;
             if (ctrl == null) return;
             var screenPt = ctrl.PointToScreen(e.Location);
