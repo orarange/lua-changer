@@ -28,6 +28,10 @@ namespace StormworksLuaReplacer
 
     public partial class MainForm : Form
     {
+        private Point resizeStart;
+        private Rectangle resizeStartBounds;
+        private bool isResizing = false;
+        private int resizeMode = 0;
         private XDocument? vehicleXml;
         private string? currentFilePath;
         private readonly List<LuaScriptNode> luaScripts = new List<LuaScriptNode>();
@@ -41,22 +45,30 @@ namespace StormworksLuaReplacer
         private TextBox? txtNewScript;
 
         // リサイズ関連
+// Windows APIの定数定義
+        private const int WM_NCHITTEST = 0x0084;
+        private const int HTCLIENT = 1;
+        private const int HTCAPTION = 2; // タイトルバー（ドラッグ移動用）
+        private const int HTLEFT = 10;
+        private const int HTRIGHT = 11;
+        private const int HTTOP = 12;
+        private const int HTTOPLEFT = 13;
+        private const int HTTOPRIGHT = 14;
+        private const int HTBOTTOM = 15;
+        private const int HTBOTTOMLEFT = 16;
+        private const int HTBOTTOMRIGHT = 17;
+
+        // リサイズ判定を行う境界線の太さ
         private const int RESIZE_BORDER = 8;
-        private Point resizeStart;
-        private Rectangle resizeStartBounds;
-        private bool isResizing = false;
+
         // ファイル監視の再読み込みデバウンス
         private System.Windows.Forms.Timer? reloadTimer;
 
         public MainForm()
         {
             InitializeComponent();
+            this.MinimumSize = new Size(400, 300);
 
-            // ボーダーレスウィンドウでもリサイズ可能にする（フォーム全体のイベントを補助）
-            this.MouseDown += MainForm_MouseDown;
-            this.MouseMove += MainForm_MouseMove;
-            this.MouseUp += MainForm_MouseUp;
-            this.Cursor = Cursors.Default;
 
             // 子コントロールがマウスイベントを奪ってしまうことが多いので、全子コントロールにも
             // フォワード用ハンドラを登録してフォームのハンドラに渡す
@@ -117,34 +129,168 @@ namespace StormworksLuaReplacer
             var ctrl = sender as Control;
             if (ctrl == null) return;
 
-            // 画面上の座標へ変換してフォームのハンドラを呼ぶ
             var screenPt = ctrl.PointToScreen(e.Location);
-            var formPt = this.PointToClient(screenPt);
-            var fe = new MouseEventArgs(e.Button, e.Clicks, formPt.X, formPt.Y, e.Delta);
-            // debug log removed
-            MainForm_MouseDown(this, fe);
+            var formPt = this.PointToClient(screenPt); // フォーム基準の座標
+
+            // リサイズ領域にいるかチェック
+            int mode = GetResizeMode(formPt);
+            if (mode != HTCLIENT)
+            {
+                // リサイズ開始
+                isResizing = true;
+                resizeMode = mode;
+                resizeStart = screenPt;          // 開始時のスクリーン座標
+                resizeStartBounds = this.Bounds; // 開始時のウィンドウ位置・サイズ
+                
+                // マウスキャプチャ（ドラッグ中にマウスが外れても追跡するため）
+                ctrl.Capture = true;
+            }
         }
 
         private void ChildControl_MouseMove(object? sender, MouseEventArgs e)
         {
             var ctrl = sender as Control;
             if (ctrl == null) return;
+
             var screenPt = ctrl.PointToScreen(e.Location);
+            
+            // リサイズ実行中
+            if (isResizing)
+            {
+                ResizeWindow(screenPt);
+                return;
+            }
+
+            // リサイズ中でない場合、カーソルの見た目を更新
             var formPt = this.PointToClient(screenPt);
-            var fe = new MouseEventArgs(e.Button, e.Clicks, formPt.X, formPt.Y, e.Delta);
-            // debug log removed
-            MainForm_MouseMove(this, fe);
+            int mode = GetResizeMode(formPt);
+            UpdateCursor(mode);
         }
 
         private void ChildControl_MouseUp(object? sender, MouseEventArgs e)
         {
-            var ctrl = sender as Control;
-            if (ctrl == null) return;
-            var screenPt = ctrl.PointToScreen(e.Location);
-            var formPt = this.PointToClient(screenPt);
-            var fe = new MouseEventArgs(e.Button, e.Clicks, formPt.X, formPt.Y, e.Delta);
-            // debug log removed
-            MainForm_MouseUp(this, fe);
+            if (isResizing)
+            {
+                isResizing = false;
+                resizeMode = HTCLIENT;
+                this.Cursor = Cursors.Default;
+                
+                // キャプチャ解除
+                var ctrl = sender as Control;
+                if (ctrl != null) ctrl.Capture = false;
+            }
+        }
+
+        private void ResizeWindow(Point currentScreenLocation)
+        {
+            if (!isResizing) return;
+
+            // マウスの移動量を計算
+            int deltaX = currentScreenLocation.X - resizeStart.X;
+            int deltaY = currentScreenLocation.Y - resizeStart.Y;
+
+            // 最小サイズの定義
+            const int MIN_WIDTH = 400;
+            const int MIN_HEIGHT = 300;
+
+            int newLeft = resizeStartBounds.Left;
+            int newTop = resizeStartBounds.Top;
+            int newWidth = resizeStartBounds.Width;
+            int newHeight = resizeStartBounds.Height;
+
+            // resizeMode は WndProc の定数(HTLEFT等)を借用して方向を判定します
+            // HTLEFT=10, HTRIGHT=11, HTTOP=12, HTTOPLEFT=13, etc...
+
+            bool isLeft = (resizeMode == HTLEFT || resizeMode == HTTOPLEFT || resizeMode == HTBOTTOMLEFT);
+            bool isRight = (resizeMode == HTRIGHT || resizeMode == HTTOPRIGHT || resizeMode == HTBOTTOMRIGHT);
+            bool isTop = (resizeMode == HTTOP || resizeMode == HTTOPLEFT || resizeMode == HTTOPRIGHT);
+            bool isBottom = (resizeMode == HTBOTTOM || resizeMode == HTBOTTOMLEFT || resizeMode == HTBOTTOMRIGHT);
+
+            // --- 横方向の計算 ---
+            if (isLeft)
+            {
+                // 1. まず「仮の幅」を計算
+                int proposedWidth = resizeStartBounds.Width - deltaX;
+
+                // 2. 最小幅で制限
+                if (proposedWidth < MIN_WIDTH) proposedWidth = MIN_WIDTH;
+
+                // 3. 【重要】右端（Right）を固定点として、新しい幅から Left を逆算する
+                //    NewLeft = (元のRight) - NewWidth
+                newWidth = proposedWidth;
+                newLeft = (resizeStartBounds.Left + resizeStartBounds.Width) - newWidth;
+            }
+            else if (isRight)
+            {
+                newWidth = resizeStartBounds.Width + deltaX;
+                if (newWidth < MIN_WIDTH) newWidth = MIN_WIDTH;
+            }
+
+            // --- 縦方向の計算 ---
+            if (isTop)
+            {
+                // 1. まず「仮の高さ」を計算
+                int proposedHeight = resizeStartBounds.Height - deltaY;
+
+                // 2. 最小高さで制限
+                if (proposedHeight < MIN_HEIGHT) proposedHeight = MIN_HEIGHT;
+
+                // 3. 【重要】下端（Bottom）を固定点として、新しい高さから Top を逆算する
+                newHeight = proposedHeight;
+                newTop = (resizeStartBounds.Top + resizeStartBounds.Height) - newHeight;
+            }
+            else if (isBottom)
+            {
+                newHeight = resizeStartBounds.Height + deltaY;
+                if (newHeight < MIN_HEIGHT) newHeight = MIN_HEIGHT;
+            }
+
+            // 境界を設定
+            this.Bounds = new Rectangle(newLeft, newTop, newWidth, newHeight);
+        }
+
+        private int GetResizeMode(Point clientPoint)
+        {
+            bool left = clientPoint.X <= RESIZE_BORDER;
+            bool right = clientPoint.X >= this.ClientSize.Width - RESIZE_BORDER;
+            bool top = clientPoint.Y <= RESIZE_BORDER;
+            bool bottom = clientPoint.Y >= this.ClientSize.Height - RESIZE_BORDER;
+
+            if (left && top) return HTTOPLEFT;
+            if (right && top) return HTTOPRIGHT;
+            if (left && bottom) return HTBOTTOMLEFT;
+            if (right && bottom) return HTBOTTOMRIGHT;
+            if (left) return HTLEFT;
+            if (right) return HTRIGHT;
+            if (top) return HTTOP;
+            if (bottom) return HTBOTTOM;
+            return HTCLIENT; // リサイズ領域ではない
+        }
+
+        private void UpdateCursor(int mode)
+        {
+            switch (mode)
+            {
+                case HTLEFT:
+                case HTRIGHT:
+                    this.Cursor = Cursors.SizeWE;
+                    break;
+                case HTTOP:
+                case HTBOTTOM:
+                    this.Cursor = Cursors.SizeNS;
+                    break;
+                case HTTOPLEFT:
+                case HTBOTTOMRIGHT:
+                    this.Cursor = Cursors.SizeNWSE;
+                    break;
+                case HTTOPRIGHT:
+                case HTBOTTOMLEFT:
+                    this.Cursor = Cursors.SizeNESW;
+                    break;
+                default:
+                    this.Cursor = Cursors.Default;
+                    break;
+            }
         }
 
         private void InitializeComponent()
@@ -620,191 +766,56 @@ namespace StormworksLuaReplacer
             }
         }
 
-        /// <summary>
-        /// ウィンドウのリサイズを処理するマウスダウンイベント
-        /// </summary>
-        private void MainForm_MouseDown(object? sender, MouseEventArgs e)
-        {
-            // debug log removed
 
-            // カーソル判定を先に行い、リサイズ開始フラグを設定
-            UpdateResizeCursor(e.Location);
-
-            resizeStart = e.Location;
-            resizeStartBounds = this.Bounds;
-
-            // カーソルがリサイズ用になっていればリサイズモードに入る
-            isResizing = this.Cursor != Cursors.Default;
-            // debug log removed
-        }
-
-        /// <summary>
-        /// マウス位置に応じてカーソルを変更し、リサイズ処理を実行
-        /// </summary>
-        private void MainForm_MouseMove(object? sender, MouseEventArgs e)
-        {
-            if (e == null) return;
-            // フォーム最小化状態では処理しない
-            if (this.WindowState == FormWindowState.Minimized)
-                return;
-
-            // リサイズ処理中かどうかを判定（フラグを使う）
-            if (isResizing && e.Button == MouseButtons.Left)
-            {
-                // debug log removed
-                ResizeWindow(e.Location);
-            }
-            else
-            {
-                // カーソルをリサイズ対象位置に応じて更新
-                UpdateResizeCursor(e.Location);
-            }
-        }
-
-        /// <summary>
-        /// マウスアップでリサイズ開始位置をリセット
-        /// </summary>
-        private void MainForm_MouseUp(object? sender, MouseEventArgs e)
-        {
-            // debug log removed
-            isResizing = false;
-            resizeStart = Point.Empty;
-        }
-
-        /// <summary>
-        /// マウス位置に応じてリサイズカーソルを設定
-        /// </summary>
-        private void UpdateResizeCursor(Point location)
-        {
-            bool isLeft = location.X < RESIZE_BORDER;
-            bool isRight = location.X > this.Width - RESIZE_BORDER;
-            bool isTop = location.Y < RESIZE_BORDER;
-            bool isBottom = location.Y > this.Height - RESIZE_BORDER;
-
-            Cursor newCursor;
-            if ((isLeft && isTop) || (isRight && isBottom))
-                newCursor = Cursors.SizeNWSE;
-            else if ((isRight && isTop) || (isLeft && isBottom))
-                newCursor = Cursors.SizeNESW;
-            else if (isLeft || isRight)
-                newCursor = Cursors.SizeWE;
-            else if (isTop || isBottom)
-                newCursor = Cursors.SizeNS;
-            else
-                newCursor = Cursors.Default;
-
-            if (this.Cursor != newCursor)
-            {
-                // debug log removed
-                this.Cursor = newCursor;
-            }
-        }
-
-        /// <summary>
-        /// マウス位置に基づいてウィンドウをリサイズ
-        /// </summary>
-        private void ResizeWindow(Point currentLocation)
-        {
-            int deltaX = currentLocation.X - resizeStart.X;
-            int deltaY = currentLocation.Y - resizeStart.Y;
-
-            int newLeft = resizeStartBounds.Left;
-            int newTop = resizeStartBounds.Top;
-            int newWidth = resizeStartBounds.Width;
-            int newHeight = resizeStartBounds.Height;
-
-            bool isLeft = resizeStart.X < RESIZE_BORDER;
-            bool isRight = resizeStart.X > resizeStartBounds.Width - RESIZE_BORDER;
-            bool isTop = resizeStart.Y < RESIZE_BORDER;
-            bool isBottom = resizeStart.Y > resizeStartBounds.Height - RESIZE_BORDER;
-
-            // 左辺のリサイズ
-            if (isLeft)
-            {
-                newLeft += deltaX;
-                newWidth -= deltaX;
-            }
-            // 右辺のリサイズ
-            else if (isRight)
-            {
-                newWidth += deltaX;
-            }
-
-            // 上辺のリサイズ
-            if (isTop)
-            {
-                newTop += deltaY;
-                newHeight -= deltaY;
-            }
-            // 下辺のリサイズ
-            else if (isBottom)
-            {
-                newHeight += deltaY;
-            }
-
-            // 最小サイズを保証
-            if (newWidth < 400) newWidth = 400;
-            if (newHeight < 300) newHeight = 300;
-
-            // debug log removed
-            this.Bounds = new Rectangle(newLeft, newTop, newWidth, newHeight);
-        }
-
-        // WM_NCHITTEST をオーバーライドしてネイティブのリサイズを有効にする。デバッグ出力も追加。
         protected override void WndProc(ref Message m)
         {
-            const int WM_NCHITTEST = 0x0084;
-            const int HTCLIENT = 1;
-            const int HTLEFT = 10;
-            const int HTRIGHT = 11;
-            const int HTTOP = 12;
-            const int HTTOPLEFT = 13;
-            const int HTTOPRIGHT = 14;
-            const int HTBOTTOM = 15;
-            const int HTBOTTOMLEFT = 16;
-            const int HTBOTTOMRIGHT = 17;
-
-            if (m.Msg == WM_NCHITTEST && this.FormBorderStyle == FormBorderStyle.None)
+            // メッセージが「マウスの当たり判定チェック (WM_NCHITTEST)」の場合のみ割り込む
+            if (m.Msg == WM_NCHITTEST)
             {
-                // まずデフォルト処理してからカスタム判定を上書きする
+                // 1. まずは通常の処理をさせる（クライアント領域かどうかの判定など）
                 base.WndProc(ref m);
 
-                try
+                // 2. 結果が「クライアント領域 (HTCLIENT)」なら、端っこかどうか詳しくチェックする
+                if ((int)m.Result == HTCLIENT)
                 {
-                    if ((int)m.Result == HTCLIENT)
-                    {
-                        int lParam = m.LParam.ToInt32();
-                        int x = (short)(lParam & 0xFFFF);
-                        int y = (short)((lParam >> 16) & 0xFFFF);
-                        Point clientPoint = this.PointToClient(new Point(x, y));
+                    // マウス座標（スクリーン座標）を取得
+                    Point screenPoint = new Point(m.LParam.ToInt32());
+                    // スクリーン座標をフォーム内のクライアント座標に変換
+                    Point clientPoint = this.PointToClient(screenPoint);
 
-                        bool left = clientPoint.X <= RESIZE_BORDER;
-                        bool right = clientPoint.X >= this.ClientSize.Width - RESIZE_BORDER;
-                        bool top = clientPoint.Y <= RESIZE_BORDER;
-                        bool bottom = clientPoint.Y >= this.ClientSize.Height - RESIZE_BORDER;
+                    // 判定ロジック
+                    bool left = clientPoint.X <= RESIZE_BORDER;
+                    bool right = clientPoint.X >= this.ClientSize.Width - RESIZE_BORDER;
+                    bool top = clientPoint.Y <= RESIZE_BORDER;
+                    bool bottom = clientPoint.Y >= this.ClientSize.Height - RESIZE_BORDER;
 
-                        if (left && top) m.Result = (IntPtr)HTTOPLEFT;
-                        else if (right && bottom) m.Result = (IntPtr)HTBOTTOMRIGHT;
-                        else if (right && top) m.Result = (IntPtr)HTTOPRIGHT;
-                        else if (left && bottom) m.Result = (IntPtr)HTBOTTOMLEFT;
-                        else if (left) m.Result = (IntPtr)HTLEFT;
-                        else if (right) m.Result = (IntPtr)HTRIGHT;
-                        else if (top) m.Result = (IntPtr)HTTOP;
-                        else if (bottom) m.Result = (IntPtr)HTBOTTOM;
-
-                        // debug log removed
-                    }
-                }
-                catch (Exception)
-                {
-                    // debug log removed
+                    if (left && top)
+                        m.Result = (IntPtr)HTTOPLEFT;
+                    else if (right && top)
+                        m.Result = (IntPtr)HTTOPRIGHT;
+                    else if (left && bottom)
+                        m.Result = (IntPtr)HTBOTTOMLEFT;
+                    else if (right && bottom)
+                        m.Result = (IntPtr)HTBOTTOMRIGHT;
+                    else if (left)
+                        m.Result = (IntPtr)HTLEFT;
+                    else if (right)
+                        m.Result = (IntPtr)HTRIGHT;
+                    else if (top)
+                        m.Result = (IntPtr)HTTOP;
+                    else if (bottom)
+                        m.Result = (IntPtr)HTBOTTOM;
+                        
+                    // 必要であれば、上部の特定のエリアを「タイトルバー(HTCAPTION)」と判定して
+                    // OS標準のウィンドウ移動機能を使うことも可能ですが、
+                    // 既存の pnlTitleBar のドラッグ処理がある場合はそのままでOKです。
                 }
                 return;
             }
 
+            // その他のメッセージは通常通り処理
             base.WndProc(ref m);
         }
-
         protected override void OnFormClosed(FormClosedEventArgs e)
         {
             base.OnFormClosed(e);
