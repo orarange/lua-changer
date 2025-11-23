@@ -5,6 +5,7 @@ using System.IO;
 using System.Linq;
 using System.Windows.Forms;
 using System.Xml.Linq;
+using System.Threading.Tasks;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
 
@@ -44,6 +45,8 @@ namespace StormworksLuaReplacer
         private Point resizeStart;
         private Rectangle resizeStartBounds;
         private bool isResizing = false;
+        // ファイル監視の再読み込みデバウンス
+        private System.Windows.Forms.Timer? reloadTimer;
 
         public MainForm()
         {
@@ -350,7 +353,7 @@ namespace StormworksLuaReplacer
             this.MainMenuStrip = menuStrip;
         }
 
-        private void BtnLoadXml_Click(object? sender, EventArgs e)
+        private async void BtnLoadXml_Click(object? sender, EventArgs e)
         {
             using var openFileDialog = new OpenFileDialog
             {
@@ -363,7 +366,7 @@ namespace StormworksLuaReplacer
                 try
                 {
                     currentFilePath = openFileDialog.FileName;
-                    LoadXmlFile();
+                    await LoadXmlFileAsync();
                     SetupFileWatcher();
                     MessageBox.Show($"XMLファイルを読み込みました。\n{luaScripts.Count}個のLuaスクリプトが見つかりました。",
                         "成功", MessageBoxButtons.OK, MessageBoxIcon.Information);
@@ -431,7 +434,7 @@ namespace StormworksLuaReplacer
             }
         }
 
-        private void BtnLoadLuaFile_Click(object? sender, EventArgs e)
+        private async void BtnLoadLuaFile_Click(object? sender, EventArgs e)
         {
             using var openFileDialog = new OpenFileDialog
             {
@@ -443,7 +446,7 @@ namespace StormworksLuaReplacer
             {
                 try
                 {
-                    txtNewScript!.Text = File.ReadAllText(openFileDialog.FileName);
+                    txtNewScript!.Text = await File.ReadAllTextAsync(openFileDialog.FileName);
                 }
                 catch (Exception ex)
                 {
@@ -476,7 +479,7 @@ namespace StormworksLuaReplacer
                 "成功", MessageBoxButtons.OK, MessageBoxIcon.Information);
         }
 
-        private void BtnSave_Click(object? sender, EventArgs e)
+        private async void BtnSave_Click(object? sender, EventArgs e)
         {
             if (vehicleXml == null || string.IsNullOrEmpty(currentFilePath))
             {
@@ -486,7 +489,7 @@ namespace StormworksLuaReplacer
 
             try
             {
-                vehicleXml.Save(currentFilePath);
+                await SaveXmlFileAsync(currentFilePath);
                 MessageBox.Show("XMLファイルを保存しました。", "成功", MessageBoxButtons.OK, MessageBoxIcon.Information);
             }
             catch (Exception ex)
@@ -495,12 +498,29 @@ namespace StormworksLuaReplacer
             }
         }
 
-        private void LoadXmlFile()
+        private async Task LoadXmlFileAsync()
         {
             if (string.IsNullOrEmpty(currentFilePath)) return;
-            vehicleXml = XDocument.Load(currentFilePath);
+            // Load on background thread to avoid blocking UI
+            vehicleXml = await Task.Run(() => XDocument.Load(currentFilePath));
             ExtractLuaScripts();
             UpdateUI();
+        }
+
+        private Task SaveXmlFileAsync(string path)
+        {
+            return Task.Run(() =>
+            {
+                var settings = new System.Xml.XmlWriterSettings
+                {
+                    Encoding = System.Text.Encoding.UTF8,
+                    Indent = true
+                };
+                using (var writer = System.Xml.XmlWriter.Create(path, settings))
+                {
+                    vehicleXml!.Save(writer);
+                }
+            });
         }
 
         private void SetupFileWatcher()
@@ -511,36 +531,41 @@ namespace StormworksLuaReplacer
             fileWatcher.Path = Path.GetDirectoryName(currentFilePath) ?? "";
             fileWatcher.Filter = Path.GetFileName(currentFilePath);
             fileWatcher.EnableRaisingEvents = true;
+
+            // initialize debounce timer
+            if (reloadTimer == null)
+            {
+                reloadTimer = new System.Windows.Forms.Timer();
+                reloadTimer.Interval = 500; // ms
+                reloadTimer.Tick += async (s, e) =>
+                {
+                    reloadTimer!.Stop();
+                    try
+                    {
+                        int selectedIndex = lstScripts!.SelectedIndex;
+                        await LoadXmlFileAsync();
+                        if (selectedIndex >= 0 && selectedIndex < lstScripts.Items.Count)
+                        {
+                            lstScripts.SelectedIndex = selectedIndex;
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        MessageBox.Show($"ファイルの再読み込みに失敗しました:\n{ex.Message}", "エラー", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                    }
+                };
+            }
         }
 
         private void FileWatcher_Changed(object sender, FileSystemEventArgs e)
         {
-            if (appState.IsReloading) return;
-            appState.IsReloading = true;
-            
-            this.Invoke((Action)(() =>
+            // Debounce rapid events by restarting the timer
+            try
             {
-                try
-                {
-                    System.Threading.Thread.Sleep(100);
-                    
-                    int selectedIndex = lstScripts!.SelectedIndex;
-                    LoadXmlFile();
-
-                    if (selectedIndex >= 0 && selectedIndex < lstScripts.Items.Count)
-                    {
-                        lstScripts.SelectedIndex = selectedIndex;
-                    }
-                }
-                catch (Exception ex)
-                {
-                    MessageBox.Show($"ファイルの再読み込みに失敗しました:\n{ex.Message}", "エラー", MessageBoxButtons.OK, MessageBoxIcon.Error);
-                }
-                finally
-                {
-                    appState.IsReloading = false;
-                }
-            }));
+                reloadTimer?.Stop();
+                reloadTimer?.Start();
+            }
+            catch { }
         }
 
         private void BtnSaveAs_Click(object? sender, EventArgs e)
