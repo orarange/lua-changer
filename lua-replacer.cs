@@ -45,7 +45,7 @@ namespace StormworksLuaReplacer
         private TextBox? txtNewScript;
 
         // リサイズ関連
-// Windows APIの定数定義
+        // Windows APIの定数定義
         private const int WM_NCHITTEST = 0x0084;
         private const int HTCLIENT = 1;
         private const int HTCAPTION = 2; // タイトルバー（ドラッグ移動用）
@@ -141,7 +141,7 @@ namespace StormworksLuaReplacer
                 resizeMode = mode;
                 resizeStart = screenPt;          // 開始時のスクリーン座標
                 resizeStartBounds = this.Bounds; // 開始時のウィンドウ位置・サイズ
-                
+
                 // マウスキャプチャ（ドラッグ中にマウスが外れても追跡するため）
                 ctrl.Capture = true;
             }
@@ -153,7 +153,7 @@ namespace StormworksLuaReplacer
             if (ctrl == null) return;
 
             var screenPt = ctrl.PointToScreen(e.Location);
-            
+
             // リサイズ実行中
             if (isResizing)
             {
@@ -174,7 +174,7 @@ namespace StormworksLuaReplacer
                 isResizing = false;
                 resizeMode = HTCLIENT;
                 this.Cursor = Cursors.Default;
-                
+
                 // キャプチャ解除
                 var ctrl = sender as Control;
                 if (ctrl != null) ctrl.Capture = false;
@@ -364,7 +364,8 @@ namespace StormworksLuaReplacer
             // Event Handlers for custom title bar
             btnClose.Click += (s, e) => this.Close();
             btnMinimize.Click += (s, e) => this.WindowState = FormWindowState.Minimized;
-            btnMaximize.Click += (s, e) => {
+            btnMaximize.Click += (s, e) =>
+            {
                 this.WindowState = this.WindowState == FormWindowState.Maximized ? FormWindowState.Normal : FormWindowState.Maximized;
                 btnMaximize.Text = this.WindowState == FormWindowState.Maximized ? "🗗" : "🗖"; // Restore/Maximize symbol
             };
@@ -450,7 +451,7 @@ namespace StormworksLuaReplacer
             var loadLuaBtn = new ToolStripButton("Lua読込", null, BtnLoadLuaFile_Click);
             var replaceBtn = new ToolStripButton("置換", null, BtnReplace_Click);
             var settingsBtn = new ToolStripButton("設定", null, BtnSettings_Click);
-            
+
             toolStrip.Items.AddRange(new ToolStripItem[] { openXmlBtn, saveBtn, new ToolStripSeparator(), loadLuaBtn, replaceBtn, new ToolStripSeparator(), settingsBtn });
 
 
@@ -538,7 +539,7 @@ namespace StormworksLuaReplacer
                 var scriptAttribute = element.Attribute("script")!;
                 var scriptContent = scriptAttribute.Value;
                 var lines = scriptContent.Split(new[] { '\n', '\r' }, StringSplitOptions.RemoveEmptyEntries);
-                
+
                 string identifier = lines.Length > 0 ? lines[0].Substring(2).Trim() : "Unknown Script";
                 if (lines.Length > 1 && lines[1].Trim().StartsWith("--"))
                 {
@@ -559,7 +560,7 @@ namespace StormworksLuaReplacer
         private void UpdateUI()
         {
             lblFilePath!.Text = $"ファイル: {currentFilePath}";
-            
+
             lstScripts!.Items.Clear();
             foreach (var script in luaScripts)
             {
@@ -587,7 +588,7 @@ namespace StormworksLuaReplacer
                 Filter = "Lua files (*.lua)|*.lua|Text files (*.txt)|*.txt|All files (*.*)|*.*",
                 Title = "Luaスクリプトファイルを選択"
             };
-            
+
             if (openFileDialog.ShowDialog() == DialogResult.OK)
             {
                 try
@@ -728,7 +729,7 @@ namespace StormworksLuaReplacer
                 Title = "XMLファイルを保存",
                 FileName = Path.GetFileName(currentFilePath)
             };
-            
+
             if (saveFileDialog.ShowDialog() == DialogResult.OK)
             {
                 var fileName = saveFileDialog.FileName;
@@ -755,7 +756,7 @@ namespace StormworksLuaReplacer
             if (settingsDialog.ShowDialog() == DialogResult.OK)
             {
                 appState.ScriptDetectionPrefix = settingsDialog.DetectionPrefix;
-                
+
                 if (vehicleXml != null)
                 {
                     ExtractLuaScripts();
@@ -805,7 +806,7 @@ namespace StormworksLuaReplacer
                         m.Result = (IntPtr)HTTOP;
                     else if (bottom)
                         m.Result = (IntPtr)HTBOTTOM;
-                        
+
                     // 必要であれば、上部の特定のエリアを「タイトルバー(HTCAPTION)」と判定して
                     // OS標準のウィンドウ移動機能を使うことも可能ですが、
                     // 既存の pnlTitleBar のドラッグ処理がある場合はそのままでOKです。
@@ -848,7 +849,7 @@ namespace StormworksLuaReplacer
         public SettingsDialog(string currentPrefix)
         {
             DetectionPrefix = currentPrefix;
-            
+
             this.Text = "スクリプト検出設定";
             this.Size = new System.Drawing.Size(500, 200);
             this.StartPosition = FormStartPosition.CenterParent;
@@ -877,7 +878,7 @@ namespace StormworksLuaReplacer
             pnlInput.Controls.Add(txtPrefix);
 
             var btnOK = new Button { Text = "OK", DialogResult = DialogResult.OK, Width = 80, Height = 30 };
-            btnOK.Click += (s, e) => 
+            btnOK.Click += (s, e) =>
             {
                 if (string.IsNullOrWhiteSpace(txtPrefix.Text))
                 {
@@ -906,7 +907,7 @@ namespace StormworksLuaReplacer
             mainLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
             mainLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
             mainLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 50F));
-            
+
             mainLayout.Controls.Add(lblDescription, 0, 0);
             mainLayout.Controls.Add(pnlInput, 0, 1);
             mainLayout.Controls.Add(pnlButtons, 0, 2);
