@@ -5,11 +5,29 @@ using System.IO;
 using System.Linq;
 using System.Windows.Forms;
 using System.Xml.Linq;
+using System.Runtime.InteropServices;
 
 namespace StormworksLuaReplacer
 {
     public partial class MainForm : Form
     {
+        // Windows API constants
+        private const int WM_NCLBUTTONDOWN = 0xA1;
+        private const int WM_NCMOUSEMOVE = 0xA0;
+        private const int HTTOP = 12;
+        private const int HTBOTTOM = 15;
+        private const int HTLEFT = 10;
+        private const int HTRIGHT = 11;
+        private const int HTTOPLEFT = 13;
+        private const int HTTOPRIGHT = 14;
+        private const int HTBOTTOMLEFT = 16;
+        private const int HTBOTTOMRIGHT = 17;
+
+        [DllImport("user32.dll", CharSet = CharSet.Auto)]
+        private static extern IntPtr SendMessage(IntPtr hWnd, int msg, IntPtr wParam, IntPtr lParam);
+
+        [DllImport("user32.dll")]
+        private static extern bool ReleaseCapture();
         private XDocument? vehicleXml;
         private string? currentFilePath;
         private readonly List<LuaScriptNode> luaScripts = new List<LuaScriptNode>();
@@ -84,7 +102,7 @@ namespace StormworksLuaReplacer
 
             var btnClose = new Button
             {
-                Text = "X",
+                Text = "✕", // Close symbol
                 Dock = DockStyle.Right,
                 Width = 45,
                 FlatStyle = FlatStyle.Flat,
@@ -98,8 +116,8 @@ namespace StormworksLuaReplacer
             btnMinimize.FlatAppearance.MouseOverBackColor = System.Drawing.Color.FromArgb(63, 63, 70);
 
             pnlTitleBar.Controls.Add(lblTitle);
-            pnlTitleBar.Controls.Add(btnMaximize);
             pnlTitleBar.Controls.Add(btnMinimize);
+            pnlTitleBar.Controls.Add(btnMaximize);
             pnlTitleBar.Controls.Add(btnClose);
 
             // Event Handlers for custom title bar
