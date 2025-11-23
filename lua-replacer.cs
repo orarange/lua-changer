@@ -9,33 +9,49 @@ using System.Runtime.InteropServices;
 
 namespace StormworksLuaReplacer
 {
+    /// <summary>
+    /// アプリケーション状態を管理するクラス
+    /// </summary>
+    public class ApplicationState
+    {
+        /// <summary>ファイル再読み込み中フラグ</summary>
+        public bool IsReloading { get; set; }
+
+        /// <summary>スクリプト検出プレフィックス（デフォルト: "-- autochanger"）</summary>
+        public string ScriptDetectionPrefix { get; set; } = "-- autochanger";
+
+        /// <summary>カスタムタイトルバー用マウス位置</summary>
+        public Point MouseLocation { get; set; }
+    }
+
     public partial class MainForm : Form
     {
         private XDocument? vehicleXml;
         private string? currentFilePath;
         private readonly List<LuaScriptNode> luaScripts = new List<LuaScriptNode>();
         private readonly FileSystemWatcher fileWatcher;
-        private bool isReloading = false;
-        private string scriptDetectionPrefix = "-- autochanger";
+        private readonly ApplicationState appState = new ApplicationState();
 
         // UI Controls
-        private readonly Label lblFilePath;
-        private readonly ListBox lstScripts;
-        private readonly TextBox txtCurrentScript;
-        private readonly TextBox txtNewScript;
+        private Label? lblFilePath;
+        private ListBox? lstScripts;
+        private TextBox? txtCurrentScript;
+        private TextBox? txtNewScript;
 
-        // For custom title bar
-        private Point mouseLocation;
+        // リサイズ関連
+        private const int RESIZE_BORDER = 8;
+        private Point resizeStart;
+        private Rectangle resizeStartBounds;
 
         public MainForm()
         {
-            // Store controls in fields for direct access
-            lblFilePath = new Label { Text = "ファイル: 未選択", Dock = DockStyle.Fill, AutoSize = false, TextAlign = System.Drawing.ContentAlignment.MiddleLeft };
-            lstScripts = new ListBox { Dock = DockStyle.Fill, Height = 300 };
-            txtCurrentScript = new TextBox { Multiline = true, Dock = DockStyle.Fill, ScrollBars = ScrollBars.Both, Font = new System.Drawing.Font("Consolas", 10), ReadOnly = true };
-            txtNewScript = new TextBox { Multiline = true, Dock = DockStyle.Fill, ScrollBars = ScrollBars.Both, Font = new System.Drawing.Font("Consolas", 10) };
-            
             InitializeComponent();
+            
+            // ボーダーレスウィンドウでもリサイズ可能にする
+            this.MouseDown += MainForm_MouseDown;
+            this.MouseMove += MainForm_MouseMove;
+            this.MouseUp += MainForm_MouseUp;
+            this.Cursor = Cursors.Default;
             
             fileWatcher = new FileSystemWatcher { NotifyFilter = NotifyFilters.LastWrite };
             fileWatcher.Changed += FileWatcher_Changed;
@@ -43,6 +59,12 @@ namespace StormworksLuaReplacer
 
         private void InitializeComponent()
         {
+            // Initialize UI Controls first
+            lblFilePath = new Label { Text = "ファイル: 未選択", Dock = DockStyle.Fill, AutoSize = false, TextAlign = System.Drawing.ContentAlignment.MiddleLeft };
+            lstScripts = new ListBox { Dock = DockStyle.Fill, Height = 300 };
+            txtCurrentScript = new TextBox { Multiline = true, Dock = DockStyle.Fill, ScrollBars = ScrollBars.Both, Font = new System.Drawing.Font("Consolas", 10), ReadOnly = true };
+            txtNewScript = new TextBox { Multiline = true, Dock = DockStyle.Fill, ScrollBars = ScrollBars.Both, Font = new System.Drawing.Font("Consolas", 10) };
+
             this.FormBorderStyle = FormBorderStyle.None; // Remove default title bar
             this.Text = ""; // Empty text for custom title bar
 
@@ -112,12 +134,12 @@ namespace StormworksLuaReplacer
             };
 
             // Drag functionality
-            pnlTitleBar.MouseDown += (s, e) => mouseLocation = e.Location;
+            pnlTitleBar.MouseDown += (s, e) => appState.MouseLocation = e.Location;
             pnlTitleBar.MouseMove += (s, e) => {
                 if (e.Button == MouseButtons.Left)
                 {
-                    this.Left += e.X - mouseLocation.X;
-                    this.Top += e.Y - mouseLocation.Y;
+                    this.Left += e.X - appState.MouseLocation.X;
+                    this.Top += e.Y - appState.MouseLocation.Y;
                 }
             };
             lblTitle.MouseDown += (s, e) => {
@@ -167,57 +189,44 @@ namespace StormworksLuaReplacer
             this.Size = new System.Drawing.Size(1000, 700);
             this.StartPosition = FormStartPosition.CenterScreen;
 
-            var btnLoadXml = new Button { Text = "ビークルXMLを開く", Dock = DockStyle.Fill, Height = 40 };
-            btnLoadXml.Click += BtnLoadXml_Click;
-            
-            lstScripts.SelectedIndexChanged += LstScripts_SelectedIndexChanged;
+            // Set up event handlers
+            lstScripts!.SelectedIndexChanged += LstScripts_SelectedIndexChanged;
 
+            // Create script content panels
             var grpCurrentScript = new GroupBox { Text = "現在のスクリプト", Dock = DockStyle.Fill, Controls = { txtCurrentScript } };
             var grpNewScript = new GroupBox { Text = "新しいスクリプト", Dock = DockStyle.Fill, Controls = { txtNewScript } };
 
-            var btnLoadLuaFile = new Button { Text = "Luaファイルを読み込む", Width = 150, Height = 40 };
-            btnLoadLuaFile.Click += BtnLoadLuaFile_Click;
-
-            var btnReplace = new Button { Text = "置換", Width = 100, Height = 40 };
-            btnReplace.Click += BtnReplace_Click;
-
-            var btnSave = new Button { Text = "XMLを保存", Width = 120, Height = 40 };
-            btnSave.Click += BtnSave_Click;
-
-            var btnSaveAs = new Button { Text = "名前を付けて保存", Width = 150, Height = 40 };
-            btnSaveAs.Click += BtnSaveAs_Click;
-
-            var btnSettings = new Button { Text = "検出設定", Width = 100, Height = 40 };
-            btnSettings.Click += BtnSettings_Click;
-
-            var pnlButtons = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.LeftToRight };
-            pnlButtons.Controls.AddRange(new Control[] { btnLoadLuaFile, btnReplace, btnSave, btnSaveAs, btnSettings });
-
+            // Create main layout
             var mainLayout = new TableLayoutPanel
             {
                 Dock = DockStyle.Fill,
                 ColumnCount = 2,
-                RowCount = 3,
+                RowCount = 2,
                 Padding = new Padding(10)
             };
             mainLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50F));
             mainLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50F));
             mainLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 150F));
             mainLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
-            mainLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 60F));
 
+            // Add file path label
             mainLayout.Controls.Add(lblFilePath, 0, 0);
             mainLayout.SetColumnSpan(lblFilePath, 2);
+
+            // Add script list panel
             var scriptListPanel = new Panel { Dock = DockStyle.Fill, Controls = { lstScripts } };
             mainLayout.Controls.Add(scriptListPanel, 0, 0);
             mainLayout.SetColumnSpan(scriptListPanel, 2);
+
+            // Add script content panels
             mainLayout.Controls.Add(grpCurrentScript, 0, 1);
             mainLayout.Controls.Add(grpNewScript, 1, 1);
 
+            // Add controls to form in correct order (top to bottom)
             this.Controls.Add(mainLayout);
             this.Controls.Add(toolStrip);
             this.Controls.Add(menuStrip);
-            this.Controls.Add(pnlTitleBar); // Add title bar to form
+            this.Controls.Add(pnlTitleBar);
             this.MainMenuStrip = menuStrip;
         }
 
@@ -253,7 +262,7 @@ namespace StormworksLuaReplacer
             if (vehicleXml == null) return;
 
             var scriptElements = vehicleXml.Descendants()
-                .Where(e => e.Attribute("script")?.Value.Trim().StartsWith(scriptDetectionPrefix, StringComparison.OrdinalIgnoreCase) ?? false);
+                .Where(e => e.Attribute("script")?.Value.Trim().StartsWith(appState.ScriptDetectionPrefix, StringComparison.OrdinalIgnoreCase) ?? false);
 
             luaScripts.AddRange(scriptElements.Select((element, index) =>
             {
@@ -280,9 +289,9 @@ namespace StormworksLuaReplacer
 
         private void UpdateUI()
         {
-            lblFilePath.Text = $"ファイル: {currentFilePath}";
+            lblFilePath!.Text = $"ファイル: {currentFilePath}";
             
-            lstScripts.Items.Clear();
+            lstScripts!.Items.Clear();
             foreach (var script in luaScripts)
             {
                 lstScripts.Items.Add(script.DisplayName);
@@ -291,12 +300,12 @@ namespace StormworksLuaReplacer
 
         private void LstScripts_SelectedIndexChanged(object? sender, EventArgs e)
         {
-            if (lstScripts.SelectedIndex < 0) return;
+            if (lstScripts!.SelectedIndex < 0) return;
 
             var selectedScript = luaScripts[lstScripts.SelectedIndex];
-            txtCurrentScript.Text = selectedScript.Script;
+            txtCurrentScript!.Text = selectedScript.Script;
 
-            if (string.IsNullOrEmpty(txtNewScript.Text))
+            if (string.IsNullOrEmpty(txtNewScript!.Text))
             {
                 txtNewScript.Text = selectedScript.Script;
             }
@@ -314,7 +323,7 @@ namespace StormworksLuaReplacer
             {
                 try
                 {
-                    txtNewScript.Text = File.ReadAllText(openFileDialog.FileName);
+                    txtNewScript!.Text = File.ReadAllText(openFileDialog.FileName);
                 }
                 catch (Exception ex)
                 {
@@ -326,13 +335,13 @@ namespace StormworksLuaReplacer
 
         private void BtnReplace_Click(object? sender, EventArgs e)
         {
-            if (lstScripts.SelectedIndex < 0)
+            if (lstScripts!.SelectedIndex < 0)
             {
                 MessageBox.Show("置換するスクリプトを選択してください。", "警告", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 return;
             }
 
-            if (string.IsNullOrWhiteSpace(txtNewScript.Text))
+            if (string.IsNullOrWhiteSpace(txtNewScript!.Text))
             {
                 MessageBox.Show("新しいスクリプトを入力してください。", "警告", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 return;
@@ -341,7 +350,7 @@ namespace StormworksLuaReplacer
             var selectedScript = luaScripts[lstScripts.SelectedIndex];
             selectedScript.Attribute.Value = txtNewScript.Text;
             selectedScript.Script = txtNewScript.Text;
-            txtCurrentScript.Text = txtNewScript.Text;
+            txtCurrentScript!.Text = txtNewScript.Text;
 
             MessageBox.Show("スクリプトを置換しました。保存するには「XMLを保存」ボタンをクリックしてください。",
                 "成功", MessageBoxButtons.OK, MessageBoxIcon.Information);
@@ -386,8 +395,8 @@ namespace StormworksLuaReplacer
 
         private void FileWatcher_Changed(object sender, FileSystemEventArgs e)
         {
-            if (isReloading) return;
-            isReloading = true;
+            if (appState.IsReloading) return;
+            appState.IsReloading = true;
             
             this.Invoke((Action)(() =>
             {
@@ -395,7 +404,7 @@ namespace StormworksLuaReplacer
                 {
                     System.Threading.Thread.Sleep(100);
                     
-                    int selectedIndex = lstScripts.SelectedIndex;
+                    int selectedIndex = lstScripts!.SelectedIndex;
                     LoadXmlFile();
 
                     if (selectedIndex >= 0 && selectedIndex < lstScripts.Items.Count)
@@ -409,7 +418,7 @@ namespace StormworksLuaReplacer
                 }
                 finally
                 {
-                    isReloading = false;
+                    appState.IsReloading = false;
                 }
             }));
         }
@@ -451,10 +460,10 @@ namespace StormworksLuaReplacer
 
         private void BtnSettings_Click(object? sender, EventArgs e)
         {
-            using var settingsDialog = new SettingsDialog(scriptDetectionPrefix);
+            using var settingsDialog = new SettingsDialog(appState.ScriptDetectionPrefix);
             if (settingsDialog.ShowDialog() == DialogResult.OK)
             {
-                scriptDetectionPrefix = settingsDialog.DetectionPrefix;
+                appState.ScriptDetectionPrefix = settingsDialog.DetectionPrefix;
                 
                 if (vehicleXml != null)
                 {
@@ -464,6 +473,122 @@ namespace StormworksLuaReplacer
                         "成功", MessageBoxButtons.OK, MessageBoxIcon.Information);
                 }
             }
+        }
+
+        /// <summary>
+        /// ウィンドウのリサイズを処理するマウスダウンイベント
+        /// </summary>
+        private void MainForm_MouseDown(object? sender, MouseEventArgs e)
+        {
+            // タイトルバー上のドラッグはスキップ（ドラッグ機能に任せる）
+            if (e.Y < 30)
+                return;
+
+            resizeStart = e.Location;
+            resizeStartBounds = this.Bounds;
+
+            // リサイズカーソルの判定と設定
+            UpdateResizeCursor(e.Location);
+        }
+
+        /// <summary>
+        /// マウス位置に応じてカーソルを変更し、リサイズ処理を実行
+        /// </summary>
+        private void MainForm_MouseMove(object? sender, MouseEventArgs e)
+        {
+            // フォーム最小化状態では処理しない
+            if (this.WindowState == FormWindowState.Minimized)
+                return;
+
+            // リサイズ処理中かどうかを判定（マウスボタンが押下中）
+            if (e.Button == MouseButtons.Left && (resizeStart.X != 0 || resizeStart.Y != 0))
+            {
+                ResizeWindow(e.Location);
+            }
+            else
+            {
+                // カーソルをリサイズ対象位置に応じて更新
+                UpdateResizeCursor(e.Location);
+            }
+        }
+
+        /// <summary>
+        /// マウスアップでリサイズ開始位置をリセット
+        /// </summary>
+        private void MainForm_MouseUp(object? sender, MouseEventArgs e)
+        {
+            resizeStart = Point.Empty;
+        }
+
+        /// <summary>
+        /// マウス位置に応じてリサイズカーソルを設定
+        /// </summary>
+        private void UpdateResizeCursor(Point location)
+        {
+            bool isLeft = location.X < RESIZE_BORDER;
+            bool isRight = location.X > this.Width - RESIZE_BORDER;
+            bool isTop = location.Y < RESIZE_BORDER;
+            bool isBottom = location.Y > this.Height - RESIZE_BORDER;
+
+            if ((isLeft && isTop) || (isRight && isBottom))
+                this.Cursor = Cursors.SizeNWSE;
+            else if ((isRight && isTop) || (isLeft && isBottom))
+                this.Cursor = Cursors.SizeNESW;
+            else if (isLeft || isRight)
+                this.Cursor = Cursors.SizeWE;
+            else if (isTop || isBottom)
+                this.Cursor = Cursors.SizeNS;
+            else
+                this.Cursor = Cursors.Default;
+        }
+
+        /// <summary>
+        /// マウス位置に基づいてウィンドウをリサイズ
+        /// </summary>
+        private void ResizeWindow(Point currentLocation)
+        {
+            int deltaX = currentLocation.X - resizeStart.X;
+            int deltaY = currentLocation.Y - resizeStart.Y;
+
+            int newLeft = resizeStartBounds.Left;
+            int newTop = resizeStartBounds.Top;
+            int newWidth = resizeStartBounds.Width;
+            int newHeight = resizeStartBounds.Height;
+
+            bool isLeft = resizeStart.X < RESIZE_BORDER;
+            bool isRight = resizeStart.X > resizeStartBounds.Width - RESIZE_BORDER;
+            bool isTop = resizeStart.Y < RESIZE_BORDER;
+            bool isBottom = resizeStart.Y > resizeStartBounds.Height - RESIZE_BORDER;
+
+            // 左辺のリサイズ
+            if (isLeft)
+            {
+                newLeft += deltaX;
+                newWidth -= deltaX;
+            }
+            // 右辺のリサイズ
+            else if (isRight)
+            {
+                newWidth += deltaX;
+            }
+
+            // 上辺のリサイズ
+            if (isTop)
+            {
+                newTop += deltaY;
+                newHeight -= deltaY;
+            }
+            // 下辺のリサイズ
+            else if (isBottom)
+            {
+                newHeight += deltaY;
+            }
+
+            // 最小サイズを保証
+            if (newWidth < 400) newWidth = 400;
+            if (newHeight < 300) newHeight = 300;
+
+            this.Bounds = new Rectangle(newLeft, newTop, newWidth, newHeight);
         }
 
         [STAThread]
