@@ -6,6 +6,7 @@ using System.Linq;
 using System.Windows.Forms;
 using System.Xml.Linq;
 using System.Threading.Tasks;
+using System.Text.Json;
 
 namespace StormworksLuaReplacer
 {
@@ -15,6 +16,41 @@ namespace StormworksLuaReplacer
         public string ScriptDetectionPrefix { get; set; } = "-- autochanger";
         public Point MouseLocation { get; set; }
         public bool IsDarkTheme { get; set; } = true;
+        public bool SuppressPrefixPrompt { get; set; } = false;
+        public string SettingsFilePath { get; set; } = string.Empty;
+        public List<string> RecentFiles { get; set; } = new List<string>();
+    }
+
+    public class PrefixConfirmDialog : Form
+    {
+        private CheckBox chkDontShow;
+        public bool DontShowAgain => chkDontShow?.Checked ?? false;
+        public PrefixConfirmDialog(List<string> displayNames)
+        {
+            this.Text = "プレフィックスを追加します";
+            this.Size = new System.Drawing.Size(520, 320);
+            this.StartPosition = FormStartPosition.CenterParent;
+            this.FormBorderStyle = FormBorderStyle.FixedDialog;
+            this.MaximizeBox = false;
+            this.MinimizeBox = false;
+
+            var lbl = new Label { Text = "以下の置換されたスクリプトに検出プレフィックスを追加します。続行しますか？", Dock = DockStyle.Top, Height = 36, Padding = new Padding(8) };
+            var txt = new TextBox { Multiline = true, ReadOnly = true, ScrollBars = ScrollBars.Vertical, Dock = DockStyle.Fill, Font = new System.Drawing.Font("Consolas", 9) };
+            txt.Text = string.Join(Environment.NewLine, displayNames);
+            chkDontShow = new CheckBox { Text = "今後表示しない", Dock = DockStyle.Bottom, Height = 24, Padding = new Padding(6, 4, 0, 4) };
+            var btnOk = new Button { Text = "はい", DialogResult = DialogResult.OK, Width = 90, Height = 30 };
+            var btnCancel = new Button { Text = "いいえ", DialogResult = DialogResult.Cancel, Width = 90, Height = 30 };
+            var pnlButtons = new FlowLayoutPanel { FlowDirection = FlowDirection.RightToLeft, Dock = DockStyle.Bottom, Height = 44, Padding = new Padding(6) };
+            pnlButtons.Controls.Add(btnCancel);
+            pnlButtons.Controls.Add(btnOk);
+
+            this.Controls.Add(txt);
+            this.Controls.Add(lbl);
+            this.Controls.Add(chkDontShow);
+            this.Controls.Add(pnlButtons);
+            this.AcceptButton = btnOk;
+            this.CancelButton = btnCancel;
+        }
     }
 
     public partial class MainForm : Form
@@ -30,6 +66,7 @@ namespace StormworksLuaReplacer
         private readonly ApplicationState appState = new ApplicationState();
 
         private Label? lblFilePath;
+        private ModernDropdown? cbRecentFiles;
         private ListBox? lstScripts;
         private TextBox? txtCurrentScript;
         private TextBox? txtNewScript;
@@ -76,6 +113,11 @@ namespace StormworksLuaReplacer
         public MainForm()
         {
             InitializeComponent();
+            LoadSettings();
+            // Populate recent-files dropdown after settings are loaded
+            UpdateRecentCombo();
+            // Apply theme from loaded settings (call again to ensure colors update)
+            ApplyTheme();
             this.DoubleBuffered = true;
             this.MinimumSize = new Size(400, 300);
             AttachMouseHandlers(this);
@@ -334,10 +376,10 @@ namespace StormworksLuaReplacer
             menuStrip.Renderer = new ToolStripProfessionalRenderer();
             if (menuStrip.Renderer is ToolStripProfessionalRenderer msr) msr.RoundedEdges = false;
             var toolStrip = new ToolStrip { GripStyle = ToolStripGripStyle.Hidden };
-            var openXmlBtn = new ToolStripButton("XMLを開く", null, BtnLoadXml_Click) { Margin = new Padding(5, 1, 0, 2) };
-            var saveBtn = new ToolStripButton("保存", null, BtnSave_Click);
+            var openXmlBtn = new ToolStripButton("XMLを開く", null, BtnLoadXml_Click) { Margin = new Padding(5, 0, 0, 0) };
             var loadLuaBtn = new ToolStripButton("Lua読込", null, BtnLoadLuaFile_Click);
             var replaceBtn = new ToolStripButton("置換", null, BtnReplace_Click);
+            var saveBtn = new ToolStripButton("保存", null, BtnSave_Click);
             var settingsBtn = new ToolStripButton("設定", null, BtnSettings_Click);
             // subtle hover effect: change ForeColor to accent
             foreach (ToolStripButton tsb in new[] { openXmlBtn, saveBtn, loadLuaBtn, replaceBtn, settingsBtn })
@@ -349,7 +391,7 @@ namespace StormworksLuaReplacer
             // remove visual separators and use margins for spacing to avoid vertical lines
             loadLuaBtn.Margin = new Padding(10, 1, 0, 2);
             settingsBtn.Margin = new Padding(10, 1, 0, 2);
-            toolStrip.Items.AddRange(new ToolStripItem[] { openXmlBtn, saveBtn, loadLuaBtn, replaceBtn, settingsBtn });
+            toolStrip.Items.AddRange(new ToolStripItem[] { openXmlBtn, loadLuaBtn, replaceBtn, saveBtn, settingsBtn });
             // Use same renderer style as menu to avoid rounded corners
             toolStrip.Renderer = new ToolStripProfessionalRenderer();
             if (toolStrip.Renderer is ToolStripProfessionalRenderer tsr) tsr.RoundedEdges = false;
@@ -415,16 +457,31 @@ namespace StormworksLuaReplacer
             // script list will be placed inside the XML area per user request
             // XML preview area (left column, spans top row)
             var xmlPanel = new Panel { Dock = DockStyle.Fill, Padding = new Padding(6), Tag = "xmlPanel" };
-            lblFilePath.Dock = DockStyle.Top;
-            lblFilePath.Height = 26;
-            var xmlInner = new Panel { Dock = DockStyle.Fill, Padding = new Padding(1), Tag = "border" };
+            // Recent-files dropdown (replaces simple file label)
+            cbRecentFiles = new ModernDropdown { Dock = DockStyle.Top, Height = 26 };
+            cbRecentFiles.SelectedIndexChanged += async (s, e) =>
+            {
+                if (cbRecentFiles == null) return;
+                var sel = cbRecentFiles.SelectedItem;
+                if (string.IsNullOrWhiteSpace(sel)) return;
+                if (string.Equals(sel, currentFilePath, StringComparison.OrdinalIgnoreCase)) return;
+                try
+                {
+                    currentFilePath = sel;
+                    await LoadXmlFileAsync();
+                    SetupFileWatcher();
+                    AddToRecentFiles(sel);
+                }
+                catch (Exception ex) { MessageBox.Show($"XMLファイルの読み込みに失敗しました:\n{ex.Message}", "エラー", MessageBoxButtons.OK, MessageBoxIcon.Error); }
+            };
+            var xmlInner = new Panel { Dock = DockStyle.Fill, Padding = new Padding(5), Tag = "border" };
             // place the detected scripts list inside the XML area (user requested)
             xmlInner.Controls.Add(lstScripts);
             var grpXml = new GroupBox { Text = "XML ファイル", Dock = DockStyle.Fill };
             grpXml.Controls.Add(xmlInner);
+            // Add controls: group (fills), then clear button, then recent-files combobox docked at top
             xmlPanel.Controls.Add(grpXml);
-            // add file label after group so it docks to the top and remains visible
-            xmlPanel.Controls.Add(lblFilePath);
+            xmlPanel.Controls.Add(cbRecentFiles!);
 
             mainLayout.Controls.Add(xmlPanel, 0, 0);
             mainLayout.SetColumnSpan(xmlPanel, 2);
@@ -471,10 +528,19 @@ namespace StormworksLuaReplacer
             };
             mainLayout.Controls.Add(grpCurrentScript, 0, 1);
             mainLayout.Controls.Add(grpNewScript, 1, 1);
+            // thin separators between menu/tool/main areas (theme-aware via Tag = "borderline")
+            var menuSeparator = new Panel { Dock = DockStyle.Top, Height = 1, Tag = "borderline" };
+            var toolSeparator = new Panel { Dock = DockStyle.Top, Height = 1, Tag = "borderline" };
+            // Ensure menu/tool dock to top explicitly
+            menuStrip.Dock = DockStyle.Top;
+            toolStrip.Dock = DockStyle.Top;
+            // Add controls in reverse so Dock = Top stacks correctly (last added appears at the top):
+            // mainLayout (fills remaining), toolSeparator, toolStrip, menuSeparator, menuStrip, pnlTitleBar (top)
             this.Controls.Add(mainLayout);
+            this.Controls.Add(toolSeparator);
             this.Controls.Add(toolStrip);
+            this.Controls.Add(menuSeparator);
             this.Controls.Add(menuStrip);
-            // title bar panel (kept)
             this.Controls.Add(pnlTitleBar);
             this.MainMenuStrip = menuStrip;
             ApplyTheme();
@@ -487,6 +553,7 @@ namespace StormworksLuaReplacer
         {
             appState.IsDarkTheme = !appState.IsDarkTheme;
             ApplyTheme();
+            SaveSettings();
         }
 
         private void ApplyTheme()
@@ -556,6 +623,11 @@ namespace StormworksLuaReplacer
                     {
                         // use a soft light-gray border instead of pure white
                         ctrl.BackColor = Color.FromArgb(200, 200, 200);
+                    }
+                    // Panels used as thin separators carry Tag == "borderline"
+                    else if (ctrl.Tag is string t2 && t2 == "borderline")
+                    {
+                        ctrl.BackColor = dark ? Color.FromArgb(80, 80, 80) : Color.FromArgb(200, 200, 200);
                     }
                     else
                     {
@@ -645,6 +717,7 @@ namespace StormworksLuaReplacer
                     currentFilePath = openFileDialog.FileName;
                     await LoadXmlFileAsync();
                     SetupFileWatcher();
+                    AddToRecentFiles(currentFilePath);
                     MessageBox.Show($"XMLファイルを読み込みました。\n{luaScripts.Count}個のLuaスクリプトが見つかりました。", "成功", MessageBoxButtons.OK, MessageBoxIcon.Information);
                 }
                 catch (Exception ex)
@@ -672,7 +745,16 @@ namespace StormworksLuaReplacer
 
         private void UpdateUI()
         {
-            lblFilePath!.Text = $"ファイル: {currentFilePath}";
+            // Update recent-files dropdown selection
+            if (cbRecentFiles != null)
+            {
+                if (!string.IsNullOrWhiteSpace(currentFilePath))
+                {
+                    if (!appState.RecentFiles.Contains(currentFilePath)) AddToRecentFiles(currentFilePath);
+                    cbRecentFiles.SelectedItem = currentFilePath;
+                }
+                else cbRecentFiles.SelectedItem = null;
+            }
             lstScripts!.Items.Clear();
             foreach (var script in luaScripts) lstScripts.Items.Add(script.DisplayName);
             UpdateListScrollbar();
@@ -745,12 +827,41 @@ namespace StormworksLuaReplacer
             catch { }
         }
 
+        // Recent-files (MRU) helpers
+        private void AddToRecentFiles(string path)
+        {
+            try
+            {
+                if (string.IsNullOrWhiteSpace(path)) return;
+                path = Path.GetFullPath(path);
+                // move to front, keep unique
+                appState.RecentFiles.RemoveAll(p => string.Equals(p, path, StringComparison.OrdinalIgnoreCase));
+                appState.RecentFiles.Insert(0, path);
+                // trim to max (10)
+                if (appState.RecentFiles.Count > 10) appState.RecentFiles.RemoveRange(10, appState.RecentFiles.Count - 10);
+                SaveSettings();
+                UpdateRecentCombo();
+            }
+            catch { }
+        }
+
+        private void UpdateRecentCombo()
+        {
+            try
+            {
+                if (cbRecentFiles == null) return;
+                cbRecentFiles.UpdateItemsFromList(appState.RecentFiles.ToList());
+                if (!string.IsNullOrWhiteSpace(currentFilePath) && appState.RecentFiles.Contains(currentFilePath)) cbRecentFiles.SelectedItem = currentFilePath;
+                else if (appState.RecentFiles.Count > 0) cbRecentFiles.SelectedIndex = 0;
+            }
+            catch { }
+        }
+
         private void LstScripts_SelectedIndexChanged(object? sender, EventArgs e)
         {
             if (lstScripts!.SelectedIndex < 0) return;
             var selectedScript = luaScripts[lstScripts.SelectedIndex];
             txtCurrentScript!.Text = selectedScript.Script;
-            if (string.IsNullOrEmpty(txtNewScript!.Text)) txtNewScript.Text = selectedScript.Script;
             UpdateTextScrollbars();
         }
 
@@ -802,6 +913,7 @@ namespace StormworksLuaReplacer
             var selectedScript = luaScripts[lstScripts.SelectedIndex];
             selectedScript.Attribute.Value = txtNewScript.Text;
             selectedScript.Script = txtNewScript.Text;
+            selectedScript.WasReplaced = true;
             txtCurrentScript!.Text = txtNewScript.Text;
             MessageBox.Show("スクリプトを置換しました。保存するには「XMLを保存」ボタンをクリックしてください。", "成功", MessageBoxButtons.OK, MessageBoxIcon.Information);
         }
@@ -821,7 +933,45 @@ namespace StormworksLuaReplacer
             UpdateUI();
         }
 
-        private Task SaveXmlFileAsync(string path) => Task.Run(() => { var settings = new System.Xml.XmlWriterSettings { Encoding = System.Text.Encoding.UTF8, Indent = true }; using (var writer = System.Xml.XmlWriter.Create(path, settings)) vehicleXml!.Save(writer); });
+        private async Task SaveXmlFileAsync(string path)
+        {
+            if (vehicleXml == null) return;
+            // Find replaced scripts that are missing the prefix
+            var prefix = appState.ScriptDetectionPrefix ?? string.Empty;
+            var toUpdate = luaScripts.Where(s => s != null && s.WasReplaced)
+                                     .Where(s => !(s.Script?.TrimStart().StartsWith(prefix, StringComparison.OrdinalIgnoreCase) ?? false))
+                                     .ToList();
+
+            if (toUpdate.Count > 0 && !appState.SuppressPrefixPrompt)
+            {
+                using (var dlg = new PrefixConfirmDialog(toUpdate.Select(s => s.DisplayName).ToList()))
+                {
+                    var dr = dlg.ShowDialog(this);
+                    if (dr != DialogResult.OK) return; // user cancelled
+                    if (dlg.DontShowAgain)
+                    {
+                        appState.SuppressPrefixPrompt = true;
+                        SaveSettings();
+                    }
+                }
+            }
+
+            await Task.Run(() =>
+            {
+                try
+                {
+                    foreach (var s in toUpdate)
+                    {
+                        try { s.Script = prefix + "\n" + s.Script; } catch { }
+                        try { s.Attribute.Value = s.Script; } catch { }
+                    }
+                }
+                catch { }
+
+                var settings = new System.Xml.XmlWriterSettings { Encoding = System.Text.Encoding.UTF8, Indent = true };
+                using (var writer = System.Xml.XmlWriter.Create(path, settings)) vehicleXml!.Save(writer);
+            });
+        }
 
         private void SetupFileWatcher()
         {
@@ -850,6 +1000,87 @@ namespace StormworksLuaReplacer
             }
         }
 
+        // Settings persistence
+        private string GetSettingsPath()
+        {
+            try
+            {
+                // Prefer exe folder so settings live next to the application by default
+                string exeDir = AppContext.BaseDirectory ?? Environment.CurrentDirectory;
+                if (IsDirectoryWritable(exeDir))
+                {
+                    return Path.Combine(exeDir, "settings.json");
+                }
+            }
+            catch { }
+            // Fallback to per-user AppData location
+            var dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "StormworksLuaReplacer");
+            Directory.CreateDirectory(dir);
+            return Path.Combine(dir, "settings.json");
+        }
+
+        private bool IsDirectoryWritable(string dir)
+        {
+            try
+            {
+                Directory.CreateDirectory(dir);
+                string testFile = Path.Combine(dir, ".__writetest.tmp");
+                File.WriteAllText(testFile, "test");
+                File.Delete(testFile);
+                return true;
+            }
+            catch { return false; }
+        }
+
+        private void LoadSettings()
+        {
+            try
+            {
+                var path = GetSettingsPath();
+                if (!File.Exists(path)) return;
+                var json = File.ReadAllText(path);
+                var model = JsonSerializer.Deserialize<AppSettingsModel>(json);
+                if (model == null) return;
+                appState.ScriptDetectionPrefix = string.IsNullOrEmpty(model.ScriptDetectionPrefix) ? appState.ScriptDetectionPrefix : model.ScriptDetectionPrefix;
+                appState.SuppressPrefixPrompt = model.SuppressPrefixPrompt;
+                appState.IsDarkTheme = model.IsDarkTheme;
+                appState.SettingsFilePath = string.IsNullOrWhiteSpace(model.SettingsFilePath) ? string.Empty : model.SettingsFilePath;
+                if (model.RecentFiles != null) appState.RecentFiles = model.RecentFiles.ToList();
+            }
+            catch { }
+        }
+
+        private void SaveSettings()
+        {
+            try
+            {
+                var model = new AppSettingsModel
+                {
+                    ScriptDetectionPrefix = appState.ScriptDetectionPrefix,
+                    SuppressPrefixPrompt = appState.SuppressPrefixPrompt,
+                    IsDarkTheme = appState.IsDarkTheme,
+                    SettingsFilePath = appState.SettingsFilePath ?? string.Empty,
+                    RecentFiles = appState.RecentFiles ?? new List<string>()
+                };
+                var json = JsonSerializer.Serialize(model, new JsonSerializerOptions { WriteIndented = true });
+                // write to default path
+                var defaultPath = GetSettingsPath();
+                File.WriteAllText(defaultPath, json);
+                // if user has chosen a custom path, write there as well
+                try
+                {
+                    if (!string.IsNullOrWhiteSpace(model.SettingsFilePath))
+                    {
+                        var dir = Path.GetDirectoryName(model.SettingsFilePath) ?? Path.GetDirectoryName(defaultPath)!;
+                        Directory.CreateDirectory(dir);
+                        File.WriteAllText(model.SettingsFilePath, json);
+                    }
+                }
+                catch { }
+            }
+            catch { }
+        }
+
         private void FileWatcher_Changed(object sender, FileSystemEventArgs e)
         {
             try { reloadTimer?.Stop(); reloadTimer?.Start(); } catch { }
@@ -866,16 +1097,20 @@ namespace StormworksLuaReplacer
                 {
                     try { vehicleXml.Save(fileName); currentFilePath = fileName; UpdateUI(); MessageBox.Show("XMLファイルを保存しました。", "成功", MessageBoxButtons.OK, MessageBoxIcon.Information); }
                     catch (Exception ex) { MessageBox.Show($"XMLファイルの保存に失敗しました:\n{ex.Message}", "エラー", MessageBoxButtons.OK, MessageBoxIcon.Error); }
+                    try { AddToRecentFiles(currentFilePath ?? string.Empty); } catch { }
                 }
             }
         }
 
         private void BtnSettings_Click(object? sender, EventArgs e)
         {
-            using var settingsDialog = new SettingsDialog(appState.ScriptDetectionPrefix);
+            var currentSettingsPath = string.IsNullOrWhiteSpace(appState.SettingsFilePath) ? GetSettingsPath() : appState.SettingsFilePath;
+            using var settingsDialog = new SettingsDialog(appState.ScriptDetectionPrefix, currentSettingsPath);
             if (settingsDialog.ShowDialog() == DialogResult.OK)
             {
                 appState.ScriptDetectionPrefix = settingsDialog.DetectionPrefix;
+                if (!string.IsNullOrWhiteSpace(settingsDialog.SettingsFilePath)) appState.SettingsFilePath = settingsDialog.SettingsFilePath;
+                SaveSettings();
                 if (vehicleXml != null) { ExtractLuaScripts(); UpdateUI(); MessageBox.Show($"検出条件を更新しました。\n{luaScripts.Count}個のスクリプトが見つかりました。", "成功", MessageBoxButtons.OK, MessageBoxIcon.Information); }
             }
         }
@@ -896,12 +1131,10 @@ namespace StormworksLuaReplacer
                         var topChild = this.GetChildAtPoint(clientPoint);
                         if (topChild != null)
                         {
-                            // convert screen point to child's client coordinates
                             var childLocal = topChild.PointToClient(screenPoint);
                             var inner = topChild.GetChildAtPoint(childLocal);
                             if (inner != null && (inner is Button || inner is ToolStrip || inner is Label))
                             {
-                                // leave m.Result as HTCLIENT so the button receives the event
                                 return;
                             }
                         }
@@ -939,6 +1172,8 @@ namespace StormworksLuaReplacer
         public int Index { get; set; }
         public string Script { get; set; } = string.Empty;
         public string DisplayName { get; set; } = string.Empty;
+        // Mark true when user replaces this script via the UI
+        public bool WasReplaced { get; set; } = false;
     }
 
     public class CustomVScroll : Control
@@ -1072,33 +1307,228 @@ namespace StormworksLuaReplacer
         }
     }
 
+    // A lightweight modern dropdown control with a popup ListBox.
+    public class ModernDropdown : Control
+    {
+        private readonly Label lblText;
+        private readonly Button btnArrow;
+        private List<string> _items = new List<string>();
+        private int _selectedIndex = -1;
+        private ToolStripDropDown? dropDown;
+        private ToolStripControlHost? dropHost;
+        private ListBox? popupListBox;
+        private ToolStripDropDownClosedEventHandler? dropDownClosedHandler;
+        private EventHandler? popupClickHandler;
+        private EventHandler? popupDoubleClickHandler;
+        private KeyEventHandler? popupKeyDownHandler;
+
+        public event EventHandler? SelectedIndexChanged;
+
+        public ModernDropdown()
+        {
+            this.Height = 26;
+            this.BackColor = Color.White;
+            this.ForeColor = Color.Black;
+            this.SetStyle(ControlStyles.OptimizedDoubleBuffer | ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint, true);
+
+            lblText = new Label { AutoSize = false, Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft, Padding = new Padding(6, 0, 0, 0) };
+            btnArrow = new Button { Dock = DockStyle.Right, Width = 28, FlatStyle = FlatStyle.Flat, Text = "▾" };
+            btnArrow.FlatAppearance.BorderSize = 0;
+            btnArrow.Click += (s, e) => TogglePopup();
+            lblText.Click += (s, e) => TogglePopup();
+
+            this.Controls.Add(lblText);
+            this.Controls.Add(btnArrow);
+        }
+
+        public List<string> Items => _items;
+
+        public int SelectedIndex
+        {
+            get => _selectedIndex;
+            set
+            {
+                if (value < -1) value = -1;
+                if (value >= _items.Count) value = _items.Count - 1;
+                if (_selectedIndex == value) return;
+                _selectedIndex = value;
+                lblText.Text = (_selectedIndex >= 0 && _selectedIndex < _items.Count) ? _items[_selectedIndex] : string.Empty;
+                SelectedIndexChanged?.Invoke(this, EventArgs.Empty);
+            }
+        }
+
+        public string? SelectedItem
+        {
+            get => (_selectedIndex >= 0 && _selectedIndex < _items.Count) ? _items[_selectedIndex] : null;
+            set
+            {
+                if (value == null) { SelectedIndex = -1; return; }
+                int idx = _items.FindIndex(p => string.Equals(p, value, StringComparison.OrdinalIgnoreCase));
+                SelectedIndex = idx;
+            }
+        }
+
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            base.OnPaint(e);
+            // draw border
+            using (var pen = new Pen(ControlPaint.Dark(this.BackColor)))
+            {
+                e.Graphics.DrawRectangle(pen, 0, 0, this.Width - 1, this.Height - 1);
+            }
+        }
+
+        private void TogglePopup()
+        {
+            if (dropDown != null && dropDown.Visible)
+            {
+                ClosePopup();
+                return;
+            }
+            ShowPopup();
+        }
+
+        private void ShowPopup()
+        {
+            ClosePopup();
+            popupListBox = new ListBox();
+            popupListBox.BorderStyle = BorderStyle.None;
+            popupListBox.SelectionMode = SelectionMode.One;
+            popupClickHandler = (s, e) => { CommitSelectionFromPopup(); };
+            popupDoubleClickHandler = (s, e) => { CommitSelectionFromPopup(); };
+            popupKeyDownHandler = (s, e) => { if (e.KeyCode == Keys.Escape) { ClosePopup(); } if (e.KeyCode == Keys.Enter) { CommitSelectionFromPopup(); e.Handled = true; } };
+            popupListBox.Click += popupClickHandler;
+            popupListBox.DoubleClick += popupDoubleClickHandler;
+            popupListBox.KeyDown += popupKeyDownHandler;
+
+            foreach (var it in _items) popupListBox.Items.Add(it);
+            popupListBox.BackColor = this.BackColor;
+            popupListBox.ForeColor = this.ForeColor;
+
+            // host the listbox inside a ToolStripDropDown so it doesn't steal focus
+            dropHost = new ToolStripControlHost(popupListBox) { Padding = Padding.Empty };
+            dropHost.AutoSize = false;
+            int width = this.Width;
+            int height = Math.Min(300, Math.Max(24, popupListBox.PreferredHeight));
+            dropHost.Size = new Size(width, height);
+
+            dropDown = new ToolStripDropDown { Padding = Padding.Empty, AutoClose = true };
+            dropDown.Items.Add(dropHost);
+            dropDownClosedHandler = new ToolStripDropDownClosedEventHandler((s, e) => { /* schedule cleanup to avoid re-entrancy */ this.BeginInvoke((Action)(() => ClosePopup())); });
+            dropDown.Closed += dropDownClosedHandler;
+
+            // Show relative to control; Show will not take focus away from main window
+            dropDown.Show(this, new Point(0, this.Height));
+        }
+
+        private void CommitSelectionFromPopup()
+        {
+            if (popupListBox == null) return;
+            int idx = popupListBox.SelectedIndex;
+            if (idx >= 0 && idx < _items.Count)
+            {
+                SelectedIndex = idx;
+            }
+            if (dropDown != null) dropDown.Close();
+            else ClosePopup();
+        }
+
+        private void ClosePopup()
+        {
+            try
+            {
+                if (dropDown != null)
+                {
+                    // detach the exact handler first to avoid Closed re-entry
+                    if (dropDownClosedHandler != null) dropDown.Closed -= dropDownClosedHandler;
+                    // safe to Close if still visible
+                    if (dropDown.Visible) dropDown.Close();
+                    dropDown.Dispose();
+                }
+            }
+            catch { }
+            try
+            {
+                if (popupListBox != null)
+                {
+                    if (popupClickHandler != null) popupListBox.Click -= popupClickHandler;
+                    if (popupDoubleClickHandler != null) popupListBox.DoubleClick -= popupDoubleClickHandler;
+                    if (popupKeyDownHandler != null) popupListBox.KeyDown -= popupKeyDownHandler;
+                }
+            }
+            catch { }
+            dropDown = null; dropHost = null; popupListBox = null;
+            dropDownClosedHandler = null; popupClickHandler = null; popupDoubleClickHandler = null; popupKeyDownHandler = null;
+        }
+
+        public void UpdateItemsFromList(List<string> list)
+        {
+            _items = list ?? new List<string>();
+            if (popupListBox != null)
+            {
+                popupListBox.Items.Clear();
+                foreach (var it in _items) popupListBox.Items.Add(it);
+            }
+            // keep selection valid
+            if (_selectedIndex >= _items.Count) _selectedIndex = _items.Count - 1;
+            lblText.Text = (_selectedIndex >= 0 && _selectedIndex < _items.Count) ? _items[_selectedIndex] : string.Empty;
+        }
+    }
+
     public class SettingsDialog : Form
     {
         private readonly TextBox txtPrefix;
+        private readonly TextBox txtSettingsPath;
         public string DetectionPrefix { get; private set; }
-        public SettingsDialog(string currentPrefix)
+        public string SettingsFilePath { get => txtSettingsPath?.Text ?? string.Empty; }
+        public SettingsDialog(string currentPrefix, string currentSettingsPath)
         {
             DetectionPrefix = currentPrefix;
-            this.Text = "スクリプト検出設定";
-            this.Size = new System.Drawing.Size(500, 200);
+            this.Text = "設定";
+            this.Size = new System.Drawing.Size(640, 240);
             this.StartPosition = FormStartPosition.CenterParent;
             this.FormBorderStyle = FormBorderStyle.FixedDialog;
             this.MaximizeBox = false;
             this.MinimizeBox = false;
-            var lblDescription = new Label { Text = "検出するスクリプトの先頭コメントプレフィックスを設定してください。\n例: \"-- autochanger\" と入力すると、この文字列で始まるス...", Dock = DockStyle.Fill, AutoSize = true, Padding = new Padding(0, 0, 0, 15) };
-            txtPrefix = new TextBox { Text = DetectionPrefix, Width = 300, Location = new System.Drawing.Point(130, 5), Font = new System.Drawing.Font("Consolas", 10) };
-            var pnlInput = new Panel { Dock = DockStyle.Fill, Height = 35 };
-            pnlInput.Controls.Add(new Label { Text = "検出プレフィックス:", AutoSize = true, Location = new System.Drawing.Point(0, 8) });
-            pnlInput.Controls.Add(txtPrefix);
-            var btnOK = new Button { Text = "OK", DialogResult = DialogResult.OK, Width = 80, Height = 30 };
+
+            var lblDescription = new Label { Text = "検出プレフィックスと設定保存先を指定してください。", Dock = DockStyle.Top, Height = 32, Padding = new Padding(8) };
+            txtPrefix = new TextBox { Text = DetectionPrefix, Width = 420, Location = new System.Drawing.Point(150, 8), Font = new System.Drawing.Font("Consolas", 10) };
+            var lblPrefix = new Label { Text = "検出プレフィックス:", AutoSize = true, Location = new System.Drawing.Point(8, 12) };
+
+            var lblSettingsPath = new Label { Text = "設定ファイル保存先:", AutoSize = true, Location = new System.Drawing.Point(8, 48) };
+            txtSettingsPath = new TextBox { Text = currentSettingsPath, Width = 480, Location = new System.Drawing.Point(150, 44) };
+            var btnBrowse = new Button { Text = "参照...", Location = new System.Drawing.Point(540, 42), Width = 80 };
+            btnBrowse.Click += (s, e) =>
+            {
+                using var sfd = new SaveFileDialog { Filter = "JSON files (*.json)|*.json|All files (*.*)|*.*", FileName = Path.GetFileName(currentSettingsPath), Title = "設定ファイルの保存先を選択" };
+                if (sfd.ShowDialog(this) == DialogResult.OK) txtSettingsPath.Text = sfd.FileName;
+            };
+
+            var btnOK = new Button { Text = "OK", DialogResult = DialogResult.OK, Width = 100, Height = 34, Location = new System.Drawing.Point(450, 160) };
             btnOK.Click += (s, e) => { if (string.IsNullOrWhiteSpace(txtPrefix.Text)) { MessageBox.Show("プレフィックスを入力してください。", "警告", MessageBoxButtons.OK, MessageBoxIcon.Warning); this.DialogResult = DialogResult.None; } else DetectionPrefix = txtPrefix.Text; };
-            var btnCancel = new Button { Text = "キャンセル", DialogResult = DialogResult.Cancel, Width = 80, Height = 30 };
-            var pnlButtons = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.RightToLeft, Padding = new Padding(0, 10, 0, 0) };
-            pnlButtons.Controls.Add(btnCancel); pnlButtons.Controls.Add(btnOK);
-            var mainLayout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 3, Padding = new Padding(15) };
-            mainLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize)); mainLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize)); mainLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 50F));
-            mainLayout.Controls.Add(lblDescription, 0, 0); mainLayout.Controls.Add(pnlInput, 0, 1); mainLayout.Controls.Add(pnlButtons, 0, 2);
-            this.Controls.Add(mainLayout); this.AcceptButton = btnOK; this.CancelButton = btnCancel;
+            var btnCancel = new Button { Text = "キャンセル", DialogResult = DialogResult.Cancel, Width = 100, Height = 34, Location = new System.Drawing.Point(540, 160) };
+
+            // Add controls
+            this.Controls.Add(lblDescription);
+            this.Controls.Add(lblPrefix);
+            this.Controls.Add(txtPrefix);
+            this.Controls.Add(lblSettingsPath);
+            this.Controls.Add(txtSettingsPath);
+            this.Controls.Add(btnBrowse);
+            this.Controls.Add(btnOK);
+            this.Controls.Add(btnCancel);
+
+            this.AcceptButton = btnOK; this.CancelButton = btnCancel;
         }
+    }
+
+    // Simple settings model persisted to %APPDATA%\StormworksLuaReplacer\settings.json
+    public class AppSettingsModel
+    {
+        public string ScriptDetectionPrefix { get; set; } = "-- autochanger";
+        public bool SuppressPrefixPrompt { get; set; } = false;
+        public bool IsDarkTheme { get; set; } = true;
+        public string SettingsFilePath { get; set; } = string.Empty;
+        public List<string> RecentFiles { get; set; } = new List<string>();
     }
 }
