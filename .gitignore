@@ -1,6 +1,8 @@
 main.lua
 lua changer.sln
 vehicle
+vehicles
+publish*
 obj
 bin
 CODE_REVIEW.md
