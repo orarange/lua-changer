@@ -34,19 +34,29 @@ namespace StormworksLuaReplacer
         private TextBox? txtCurrentScript;
         private TextBox? txtNewScript;
         private Panel? pnlTitleBar;
+        private Panel? titleRightSpacer;
         private Panel? pnlCurrentBorder;
         private Panel? pnlNewBorder;
         private CustomVScroll? vScrollList;
         private CustomVScroll? vScrollCurrent;
         private CustomVScroll? vScrollNew;
-        private StatusStrip? statusStrip;
-        private ToolStripStatusLabel? statusLabel;
+        // status strip removed to avoid interfering with window resizing
         private Color accentColor = Color.FromArgb(0, 122, 204);
+        
+        
 
         private const int SB_VERT = 1;
 
         [System.Runtime.InteropServices.DllImport("user32.dll")]
         private static extern bool ShowScrollBar(IntPtr hWnd, int wBar, bool bShow);
+
+        [System.Runtime.InteropServices.DllImport("user32.dll", CharSet = System.Runtime.InteropServices.CharSet.Auto)]
+        private static extern IntPtr SendMessage(IntPtr hWnd, int Msg, IntPtr wParam, IntPtr lParam);
+
+        private const int WM_VSCROLL = 0x0115;
+        private const int SB_PAGEUP = 2;
+        private const int SB_PAGEDOWN = 3;
+        private const int SB_BOTTOM = 7;
 
         private const int WM_NCHITTEST = 0x0084;
         private const int HTCLIENT = 1;
@@ -188,6 +198,12 @@ namespace StormworksLuaReplacer
 
         private void UpdateCursor(int mode)
         {
+            // If window is maximized, do not show resize cursors
+            if (this.WindowState == FormWindowState.Maximized)
+            {
+                this.Cursor = Cursors.Default;
+                return;
+            }
             switch (mode)
             {
                 case HTLEFT:
@@ -229,11 +245,11 @@ namespace StormworksLuaReplacer
             var lblTitle = new Label { Text = "Stormworks Lua Script Replacer", ForeColor = System.Drawing.Color.White, Location = new System.Drawing.Point(10, 8) };
             lblTitle.Font = new System.Drawing.Font("Segoe UI", 9F, System.Drawing.FontStyle.Bold);
             this.Font = new System.Drawing.Font("Segoe UI", 9F);
-            var btnMaximize = new Button { Text = "🗖", Dock = DockStyle.Right, Width = 45, FlatStyle = FlatStyle.Flat, ForeColor = System.Drawing.Color.White, BackColor = System.Drawing.Color.FromArgb(45, 45, 48) };
+            var btnMaximize = new Button { Text = "🗖", Dock = DockStyle.Right, Width = 45, FlatStyle = FlatStyle.Flat, ForeColor = System.Drawing.Color.White, BackColor = System.Drawing.Color.FromArgb(60, 45, 72) };
             btnMaximize.FlatAppearance.BorderSize = 0;
             btnMaximize.FlatAppearance.MouseOverBackColor = System.Drawing.Color.FromArgb(63, 63, 70);
-            var btnMinimize = new Button { Text = "—", Dock = DockStyle.Right, Width = 45, FlatStyle = FlatStyle.Flat, ForeColor = System.Drawing.Color.White, BackColor = System.Drawing.Color.FromArgb(45, 45, 48) };
-            var btnClose = new Button { Text = "✕", Dock = DockStyle.Right, Width = 45, FlatStyle = FlatStyle.Flat, ForeColor = System.Drawing.Color.White, BackColor = System.Drawing.Color.FromArgb(45, 45, 48) };
+            var btnMinimize = new Button { Text = "—", Dock = DockStyle.Right, Width = 45, FlatStyle = FlatStyle.Flat, ForeColor = System.Drawing.Color.White, BackColor = System.Drawing.Color.FromArgb(60, 45, 72) };
+            var btnClose = new Button { Text = "✕", Dock = DockStyle.Right, Width = 45, FlatStyle = FlatStyle.Flat, ForeColor = System.Drawing.Color.White, BackColor = System.Drawing.Color.FromArgb(60, 45, 72) };
             btnClose.FlatAppearance.BorderSize = 0;
             btnClose.FlatAppearance.MouseOverBackColor = System.Drawing.Color.FromArgb(212, 63, 63);
             btnMinimize.FlatAppearance.BorderSize = 0;
@@ -242,6 +258,24 @@ namespace StormworksLuaReplacer
             pnlTitleBar.Controls.Add(btnMinimize);
             pnlTitleBar.Controls.Add(btnMaximize);
             pnlTitleBar.Controls.Add(btnClose);
+            // spacer to the right of titlebar buttons to create a clickable margin
+            titleRightSpacer = new Panel { Dock = DockStyle.Right, Width = 10, BackColor = Color.Transparent };
+            pnlTitleBar.Controls.Add(titleRightSpacer);
+            // hide spacer when window is maximized to avoid extra offset
+            titleRightSpacer.Visible = this.WindowState != FormWindowState.Maximized;
+            // Ensure maximized bounds use the working area (so the taskbar isn't covered)
+            this.Load += (s, e) =>
+            {
+                try { this.MaximizedBounds = Screen.FromHandle(this.Handle).WorkingArea; }
+                catch { }
+                if (titleRightSpacer != null) titleRightSpacer.Visible = this.WindowState != FormWindowState.Maximized;
+            };
+            this.Resize += (s, e) =>
+            {
+                try { this.MaximizedBounds = Screen.FromHandle(this.Handle).WorkingArea; }
+                catch { }
+                if (titleRightSpacer != null) titleRightSpacer.Visible = this.WindowState != FormWindowState.Maximized;
+            };
             btnClose.Click += (s, e) => this.Close();
             btnMinimize.Click += (s, e) => this.WindowState = FormWindowState.Minimized;
             btnMaximize.Click += (s, e) =>
@@ -276,6 +310,7 @@ namespace StormworksLuaReplacer
                 Message msg = Message.Create(pnlTitleBar.Handle, 0x00A1, (IntPtr)0x0002, IntPtr.Zero);
                 this.DefWndProc(ref msg);
             };
+            
             var menuStrip = new MenuStrip();
             var fileMenu = new ToolStripMenuItem("ファイル");
             var openXmlItem = new ToolStripMenuItem("ビークルXMLを開く...", null, BtnLoadXml_Click);
@@ -333,33 +368,70 @@ namespace StormworksLuaReplacer
             // Wrap textboxes in thin border panels so we can control border color in dark mode
             pnlCurrentBorder = new Panel { Dock = DockStyle.Fill, Padding = new Padding(1), Tag = "border" };
             pnlCurrentBorder.Controls.Add(txtCurrentScript);
-            txtCurrentScript!.MouseWheel += (s, e) => { if (vScrollCurrent != null) { int delta = -e.Delta / 120; vScrollCurrent.Value = Math.Max(vScrollCurrent.Minimum, Math.Min(vScrollCurrent.Maximum, vScrollCurrent.Value + delta * Math.Max(1, vScrollCurrent.SmallChange))); } };
+            txtCurrentScript!.MouseWheel += (s, e) =>
+            {
+                if (txtCurrentScript == null) return;
+                int pages = Math.Max(1, Math.Abs(e.Delta) / 120);
+                if (e.Delta < 0)
+                {
+                    for (int i = 0; i < pages; i++) SendMessage(txtCurrentScript.Handle, WM_VSCROLL, (IntPtr)SB_PAGEDOWN, IntPtr.Zero);
+                }
+                else if (e.Delta > 0)
+                {
+                    for (int i = 0; i < pages; i++) SendMessage(txtCurrentScript.Handle, WM_VSCROLL, (IntPtr)SB_PAGEUP, IntPtr.Zero);
+                }
+                UpdateTextScrollbars();
+                SyncVScrollFromText(txtCurrentScript, vScrollCurrent);
+            };
             txtCurrentScript.TextChanged += (s, e) => UpdateTextScrollbars();
             var grpCurrentScript = new GroupBox { Text = "現在のスクリプト", Dock = DockStyle.Fill };
             grpCurrentScript.Controls.Add(pnlCurrentBorder);
 
             pnlNewBorder = new Panel { Dock = DockStyle.Fill, Padding = new Padding(1), Tag = "border" };
             pnlNewBorder.Controls.Add(txtNewScript);
-            txtNewScript!.MouseWheel += (s, e) => { if (vScrollNew != null) { int delta = -e.Delta / 120; vScrollNew.Value = Math.Max(vScrollNew.Minimum, Math.Min(vScrollNew.Maximum, vScrollNew.Value + delta * Math.Max(1, vScrollNew.SmallChange))); } };
+            txtNewScript!.MouseWheel += (s, e) =>
+            {
+                if (txtNewScript == null) return;
+                int pages = Math.Max(1, Math.Abs(e.Delta) / 120);
+                if (e.Delta < 0)
+                {
+                    for (int i = 0; i < pages; i++) SendMessage(txtNewScript.Handle, WM_VSCROLL, (IntPtr)SB_PAGEDOWN, IntPtr.Zero);
+                }
+                else if (e.Delta > 0)
+                {
+                    for (int i = 0; i < pages; i++) SendMessage(txtNewScript.Handle, WM_VSCROLL, (IntPtr)SB_PAGEUP, IntPtr.Zero);
+                }
+                UpdateTextScrollbars();
+                SyncVScrollFromText(txtNewScript, vScrollNew);
+            };
             txtNewScript.TextChanged += (s, e) => UpdateTextScrollbars();
             var grpNewScript = new GroupBox { Text = "新しいスクリプト", Dock = DockStyle.Fill };
             grpNewScript.Controls.Add(pnlNewBorder);
             var mainLayout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 2, Padding = new Padding(10) };
-            mainLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50F));
-            mainLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50F));
-            mainLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 150F));
+            mainLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 35F));
+            mainLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 65F));
+            mainLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 300F));
             mainLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
-            mainLayout.Controls.Add(lblFilePath, 0, 0);
-            mainLayout.SetColumnSpan(lblFilePath, 2);
-            // Wrap listbox in border panel as well
-            var scriptListInner = new Panel { Dock = DockStyle.Fill, Padding = new Padding(1), Tag = "border" };
-            scriptListInner.Controls.Add(lstScripts);
-            var scriptListPanel = new Panel { Dock = DockStyle.Fill };
-            scriptListPanel.Controls.Add(scriptListInner);
+            // script list will be placed inside the XML area per user request
+            // XML preview area (left column, spans top row)
+            var xmlPanel = new Panel { Dock = DockStyle.Fill, Padding = new Padding(6), Tag = "xmlPanel" };
+            lblFilePath.Dock = DockStyle.Top;
+            lblFilePath.Height = 26;
+            var xmlInner = new Panel { Dock = DockStyle.Fill, Padding = new Padding(1), Tag = "border" };
+            // place the detected scripts list inside the XML area (user requested)
+            xmlInner.Controls.Add(lstScripts);
+            var grpXml = new GroupBox { Text = "XML ファイル", Dock = DockStyle.Fill };
+            grpXml.Controls.Add(xmlInner);
+            xmlPanel.Controls.Add(grpXml);
+            // add file label after group so it docks to the top and remains visible
+            xmlPanel.Controls.Add(lblFilePath);
 
+            mainLayout.Controls.Add(xmlPanel, 0, 0);
+            mainLayout.SetColumnSpan(xmlPanel, 2);
             // create custom scrollbars and add to respective containers
             vScrollList = new CustomVScroll { Dock = DockStyle.Right, Width = 14 };
-            scriptListInner.Controls.Add(vScrollList);
+            // attach scrollbar to the scripts list inside the left XML area
+            xmlInner.Controls.Add(vScrollList);
             vScrollList.ValueChanged += (s, e) => { if (lstScripts != null) lstScripts.TopIndex = vScrollList.Value; };
 
             vScrollCurrent = new CustomVScroll { Dock = DockStyle.Right, Width = 14 };
@@ -371,7 +443,13 @@ namespace StormworksLuaReplacer
                 if (line < 0) line = 0;
                 if (line >= txtCurrentScript.Lines.Length) line = Math.Max(0, txtCurrentScript.Lines.Length - 1);
                 int idx = txtCurrentScript.GetFirstCharIndexFromLine(line);
-                if (idx >= 0) { txtCurrentScript.SelectionStart = idx; txtCurrentScript.ScrollToCaret(); }
+                if (idx >= 0)
+                {
+                    int prevSel = txtCurrentScript.SelectionStart;
+                    txtCurrentScript.SelectionStart = idx;
+                    txtCurrentScript.ScrollToCaret();
+                    txtCurrentScript.SelectionStart = prevSel;
+                }
             };
 
             vScrollNew = new CustomVScroll { Dock = DockStyle.Right, Width = 14 };
@@ -383,21 +461,20 @@ namespace StormworksLuaReplacer
                 if (line < 0) line = 0;
                 if (line >= txtNewScript.Lines.Length) line = Math.Max(0, txtNewScript.Lines.Length - 1);
                 int idx = txtNewScript.GetFirstCharIndexFromLine(line);
-                if (idx >= 0) { txtNewScript.SelectionStart = idx; txtNewScript.ScrollToCaret(); }
+                if (idx >= 0)
+                {
+                    int prevSel = txtNewScript.SelectionStart;
+                    txtNewScript.SelectionStart = idx;
+                    txtNewScript.ScrollToCaret();
+                    txtNewScript.SelectionStart = prevSel;
+                }
             };
-            mainLayout.Controls.Add(scriptListPanel, 0, 0);
-            mainLayout.SetColumnSpan(scriptListPanel, 2);
             mainLayout.Controls.Add(grpCurrentScript, 0, 1);
             mainLayout.Controls.Add(grpNewScript, 1, 1);
             this.Controls.Add(mainLayout);
             this.Controls.Add(toolStrip);
             this.Controls.Add(menuStrip);
-            // status strip (modern look)
-            statusStrip = new StatusStrip();
-            statusLabel = new ToolStripStatusLabel("Ready") { Spring = true };
-            statusStrip.Items.Add(statusLabel);
-            statusStrip.Dock = DockStyle.Bottom;
-            this.Controls.Add(statusStrip);
+            // title bar panel (kept)
             this.Controls.Add(pnlTitleBar);
             this.MainMenuStrip = menuStrip;
             ApplyTheme();
@@ -420,7 +497,7 @@ namespace StormworksLuaReplacer
             // Use a slightly off-white for dark-mode text/borders to reduce harsh contrast
             this.ForeColor = dark ? Color.FromArgb(230, 230, 230) : Color.Black;
             // Title bar must remain fixed color
-            if (pnlTitleBar != null) pnlTitleBar.BackColor = Color.FromArgb(45, 45, 48);
+            if (pnlTitleBar != null) pnlTitleBar.BackColor = Color.FromArgb(60, 45, 72);
             // Apply recursively to other controls (skip title bar)
             foreach (Control c in this.Controls)
             {
@@ -430,26 +507,22 @@ namespace StormworksLuaReplacer
             // ensure custom scrollbars use theme-friendly colors
             if (vScrollList != null)
             {
-                vScrollList.BackColor = dark ? Color.FromArgb(45, 45, 48) : SystemColors.Control;
+                vScrollList.BackColor = dark ? Color.FromArgb(60, 45, 72) : SystemColors.Control;
                 vScrollList.ForeColor = dark ? Color.FromArgb(200, 200, 200) : Color.Black;
             }
             if (vScrollCurrent != null)
             {
-                vScrollCurrent.BackColor = dark ? Color.FromArgb(45, 45, 48) : SystemColors.Control;
+                vScrollCurrent.BackColor = dark ? Color.FromArgb(60, 45, 72) : SystemColors.Control;
                 vScrollCurrent.ForeColor = dark ? Color.FromArgb(200, 200, 200) : Color.Black;
             }
             if (vScrollNew != null)
             {
-                vScrollNew.BackColor = dark ? Color.FromArgb(45, 45, 48) : SystemColors.Control;
+                vScrollNew.BackColor = dark ? Color.FromArgb(60, 45, 72) : SystemColors.Control;
                 vScrollNew.ForeColor = dark ? Color.FromArgb(200, 200, 200) : Color.Black;
             }
-            // status strip
-            if (statusStrip != null)
-            {
-                statusStrip.BackColor = dark ? Color.FromArgb(37, 37, 38) : SystemColors.Control;
-                statusStrip.ForeColor = dark ? Color.FromArgb(200, 200, 200) : Color.Black;
-                if (statusLabel != null) statusLabel.ForeColor = dark ? Color.FromArgb(200, 200, 200) : Color.Black;
-            }
+            // status strip removed (avoids interfering with window resize)
+            // xml editor and line numbers (removed)
+            // header and header buttons (removed)
         }
 
         private void ApplyThemeToControl(Control ctrl, bool dark)
@@ -603,11 +676,7 @@ namespace StormworksLuaReplacer
             lstScripts!.Items.Clear();
             foreach (var script in luaScripts) lstScripts.Items.Add(script.DisplayName);
             UpdateListScrollbar();
-            if (statusLabel != null)
-            {
-                var count = luaScripts.Count;
-                statusLabel.Text = string.IsNullOrEmpty(currentFilePath) ? "Ready" : $"{Path.GetFileName(currentFilePath)} — {count} スクリプト";
-            }
+            // XML preview removed; nothing to update in this area
         }
 
         private void UpdateListScrollbar()
@@ -618,6 +687,8 @@ namespace StormworksLuaReplacer
             vScrollList.Minimum = 0;
             vScrollList.Maximum = max;
             vScrollList.LargeChange = visible;
+            // set thumb pixel size to match visible items (approx)
+            try { vScrollList.ThumbSizePixels = visible * lstScripts.ItemHeight; } catch { vScrollList.ThumbSizePixels = 0; }
             try
             {
                 int top = lstScripts.TopIndex;
@@ -636,25 +707,42 @@ namespace StormworksLuaReplacer
             if (txtCurrentScript != null && vScrollCurrent != null)
             {
                 int total = Math.Max(1, txtCurrentScript.Lines.Length);
-                int visible = Math.Max(1, txtCurrentScript.ClientSize.Height / TextRenderer.MeasureText("A", txtCurrentScript.Font).Height);
+                int lineHeight = TextRenderer.MeasureText("A", txtCurrentScript.Font).Height;
+                int visible = Math.Max(1, txtCurrentScript.ClientSize.Height / lineHeight);
                 int max = Math.Max(0, total - visible);
                 vScrollCurrent.Minimum = 0;
                 vScrollCurrent.Maximum = max;
                 vScrollCurrent.LargeChange = visible;
                 vScrollCurrent.Value = Math.Min(vScrollCurrent.Value, vScrollCurrent.Maximum);
+                try { vScrollCurrent.ThumbSizePixels = visible * lineHeight; } catch { vScrollCurrent.ThumbSizePixels = 0; }
                 try { ShowScrollBar(txtCurrentScript.Handle, SB_VERT, false); } catch { }
             }
             if (txtNewScript != null && vScrollNew != null)
             {
                 int total = Math.Max(1, txtNewScript.Lines.Length);
-                int visible = Math.Max(1, txtNewScript.ClientSize.Height / TextRenderer.MeasureText("A", txtNewScript.Font).Height);
+                int lineHeight2 = TextRenderer.MeasureText("A", txtNewScript.Font).Height;
+                int visible = Math.Max(1, txtNewScript.ClientSize.Height / lineHeight2);
                 int max = Math.Max(0, total - visible);
                 vScrollNew.Minimum = 0;
                 vScrollNew.Maximum = max;
                 vScrollNew.LargeChange = visible;
                 vScrollNew.Value = Math.Min(vScrollNew.Value, vScrollNew.Maximum);
+                try { vScrollNew.ThumbSizePixels = visible * lineHeight2; } catch { vScrollNew.ThumbSizePixels = 0; }
                 try { ShowScrollBar(txtNewScript.Handle, SB_VERT, false); } catch { }
             }
+        }
+
+        private void SyncVScrollFromText(TextBox? tb, CustomVScroll? vs)
+        {
+            if (tb == null || vs == null) return;
+            try
+            {
+                var pt = new Point(0, 0);
+                int firstChar = tb.GetCharIndexFromPosition(pt);
+                int firstLine = Math.Max(0, tb.GetLineFromCharIndex(firstChar));
+                vs.Value = Math.Max(vs.Minimum, Math.Min(vs.Maximum, firstLine));
+            }
+            catch { }
         }
 
         private void LstScripts_SelectedIndexChanged(object? sender, EventArgs e)
@@ -693,6 +781,8 @@ namespace StormworksLuaReplacer
             // keep custom scrollbar in sync
             UpdateListScrollbar();
         }
+
+        
 
         private async void BtnLoadLuaFile_Click(object? sender, EventArgs e)
         {
@@ -799,6 +889,25 @@ namespace StormworksLuaReplacer
                 {
                     Point screenPoint = new Point(m.LParam.ToInt32());
                     Point clientPoint = this.PointToClient(screenPoint);
+                    // If the point is over an interactive child control (e.g. titlebar buttons),
+                    // don't treat it as a resize handle — allow the control to receive the click.
+                    try
+                    {
+                        var topChild = this.GetChildAtPoint(clientPoint);
+                        if (topChild != null)
+                        {
+                            // convert screen point to child's client coordinates
+                            var childLocal = topChild.PointToClient(screenPoint);
+                            var inner = topChild.GetChildAtPoint(childLocal);
+                            if (inner != null && (inner is Button || inner is ToolStrip || inner is Label))
+                            {
+                                // leave m.Result as HTCLIENT so the button receives the event
+                                return;
+                            }
+                        }
+                    }
+                    catch { }
+
                     bool left = clientPoint.X <= RESIZE_BORDER;
                     bool right = clientPoint.X >= this.ClientSize.Width - RESIZE_BORDER;
                     bool top = clientPoint.Y <= RESIZE_BORDER;
@@ -841,6 +950,13 @@ namespace StormworksLuaReplacer
         private int dragOffset = 0;
         public int SmallChange { get; set; } = 1;
         public int LargeChange { get; set; } = 10;
+        private int _thumbSizePixels = 0;
+        /// <summary>
+        /// Optional explicit thumb size in pixels. When > 0, this value is used
+        /// to determine the slider height, allowing the caller to set thumb
+        /// height based on visible line/item pixel height.
+        /// </summary>
+        public int ThumbSizePixels { get => _thumbSizePixels; set { _thumbSizePixels = Math.Max(0, value); Invalidate(); } }
         public int Minimum { get => _minimum; set { _minimum = value; Invalidate(); } }
         public int Maximum { get => _maximum; set { _maximum = Math.Max(0, value); Invalidate(); } }
         public int Value
@@ -870,7 +986,19 @@ namespace StormworksLuaReplacer
             int h = this.ClientSize.Height;
             int w = this.ClientSize.Width;
             int range = Math.Max(1, Maximum - Minimum + 1);
-            int thumbHeight = Math.Max(18, (int)(h * (LargeChange / (double)(range + LargeChange))));
+            int thumbHeight;
+            if (ThumbSizePixels > 0)
+            {
+                thumbHeight = Math.Max(12, Math.Min(h - 2, ThumbSizePixels));
+            }
+            else
+            {
+                // Chrome-like proportional thumb: thumbHeight = (visible / totalContent) * trackHeight
+                // totalContent approximated as (Maximum - Minimum + LargeChange)
+                int totalContent = Math.Max(1, (Maximum - Minimum + LargeChange));
+                double ratio = Math.Max(0.0, Math.Min(1.0, LargeChange / (double)totalContent));
+                thumbHeight = Math.Max(12, (int)(h * ratio));
+            }
             int track = h - thumbHeight;
             int thumbTop = track > 0 ? (int)(track * ((Value - Minimum) / (double)Math.Max(1, Maximum - Minimum))) : 0;
             var trackRect = new Rectangle(0, 0, w, h);
@@ -887,7 +1015,17 @@ namespace StormworksLuaReplacer
             base.OnMouseDown(e);
             int h = this.ClientSize.Height;
             int range = Math.Max(1, Maximum - Minimum + 1);
-            int thumbHeight = Math.Max(18, (int)(h * (LargeChange / (double)(range + LargeChange))));
+            int thumbHeight;
+            if (ThumbSizePixels > 0)
+            {
+                thumbHeight = Math.Max(12, Math.Min(h - 2, ThumbSizePixels));
+            }
+            else
+            {
+                int totalContent = Math.Max(1, (Maximum - Minimum + LargeChange));
+                double ratio = Math.Max(0.0, Math.Min(1.0, LargeChange / (double)totalContent));
+                thumbHeight = Math.Max(12, (int)(h * ratio));
+            }
             int track = h - thumbHeight;
             int thumbTop = track > 0 ? (int)(track * ((Value - Minimum) / (double)Math.Max(1, Maximum - Minimum))) : 0;
             var thumbRect = new Rectangle(1, thumbTop, this.ClientSize.Width - 2, thumbHeight);
@@ -909,7 +1047,17 @@ namespace StormworksLuaReplacer
             if (!dragging) return;
             int h = this.ClientSize.Height;
             int range = Math.Max(1, Maximum - Minimum + 1);
-            int thumbHeight = Math.Max(18, (int)(h * (LargeChange / (double)(range + LargeChange))));
+            int thumbHeight;
+            if (ThumbSizePixels > 0)
+            {
+                thumbHeight = Math.Max(12, Math.Min(h - 2, ThumbSizePixels));
+            }
+            else
+            {
+                int totalContent = Math.Max(1, (Maximum - Minimum + LargeChange));
+                double ratio = Math.Max(0.0, Math.Min(1.0, LargeChange / (double)totalContent));
+                thumbHeight = Math.Max(12, (int)(h * ratio));
+            }
             int track = h - thumbHeight;
             int y = e.Y - dragOffset;
             y = Math.Max(0, Math.Min(track, y));
