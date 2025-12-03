@@ -61,8 +61,10 @@ namespace StormworksLuaReplacer
         private int resizeMode = 0;
         private XDocument? vehicleXml;
         private string? currentFilePath;
+        private string? currentLuaFilePath;
         private readonly List<LuaScriptNode> luaScripts = new List<LuaScriptNode>();
         private readonly FileSystemWatcher fileWatcher;
+        private readonly FileSystemWatcher luaFileWatcher;
         private readonly ApplicationState appState = new ApplicationState();
 
         private Label? lblFilePath;
@@ -109,6 +111,7 @@ namespace StormworksLuaReplacer
 
         private const int RESIZE_BORDER = 8;
         private System.Windows.Forms.Timer? reloadTimer;
+        private System.Windows.Forms.Timer? luaReloadTimer;
 
         public MainForm()
         {
@@ -122,7 +125,18 @@ namespace StormworksLuaReplacer
             this.MinimumSize = new Size(400, 300);
             AttachMouseHandlers(this);
             fileWatcher = new FileSystemWatcher { NotifyFilter = NotifyFilters.LastWrite };
+            fileWatcher.SynchronizingObject = this;
             fileWatcher.Changed += FileWatcher_Changed;
+            fileWatcher.Created += FileWatcher_Changed;
+            fileWatcher.Deleted += FileWatcher_Changed;
+            fileWatcher.Renamed += FileWatcher_Changed;
+
+            luaFileWatcher = new FileSystemWatcher { NotifyFilter = NotifyFilters.LastWrite };
+            luaFileWatcher.SynchronizingObject = this;
+            luaFileWatcher.Changed += LuaFileWatcher_Changed;
+            luaFileWatcher.Created += LuaFileWatcher_Changed;
+            luaFileWatcher.Deleted += LuaFileWatcher_Changed;
+            luaFileWatcher.Renamed += LuaFileWatcher_Changed;
         }
 
         private void AttachMouseHandlers(Control parent)
@@ -900,7 +914,12 @@ namespace StormworksLuaReplacer
             using var openFileDialog = new OpenFileDialog { Filter = "Lua files (*.lua)|*.lua|Text files (*.txt)|*.txt|All files (*.*)|*.*", Title = "Luaスクリプトファイルを選択" };
             if (openFileDialog.ShowDialog() == DialogResult.OK)
             {
-                try { txtNewScript!.Text = await File.ReadAllTextAsync(openFileDialog.FileName); }
+                try
+                {
+                    txtNewScript!.Text = await File.ReadAllTextAsync(openFileDialog.FileName);
+                    txtNewScript.Modified = false;
+                    SetupLuaFileWatcher(openFileDialog.FileName);
+                }
                 catch (Exception ex) { MessageBox.Show($"Luaファイルの読み込みに失敗しました:\n{ex.Message}", "エラー", MessageBoxButtons.OK, MessageBoxIcon.Error); }
                 UpdateTextScrollbars();
             }
@@ -975,29 +994,93 @@ namespace StormworksLuaReplacer
 
         private void SetupFileWatcher()
         {
-            if (string.IsNullOrEmpty(currentFilePath)) return;
-            fileWatcher.EnableRaisingEvents = false;
-            fileWatcher.Path = Path.GetDirectoryName(currentFilePath) ?? "";
-            fileWatcher.Filter = Path.GetFileName(currentFilePath);
-            fileWatcher.EnableRaisingEvents = true;
-            if (reloadTimer == null)
+            try
             {
-                reloadTimer = new System.Windows.Forms.Timer();
-                reloadTimer.Interval = 500;
-                reloadTimer.Tick += async (s, e) =>
-                {
-                    reloadTimer!.Stop();
-                    try
-                    {
-                        int selectedIndex = lstScripts!.SelectedIndex;
-                        await LoadXmlFileAsync();
-                        if (selectedIndex >= 0 && selectedIndex < lstScripts.Items.Count) lstScripts.SelectedIndex = selectedIndex;
-                            UpdateListScrollbar();
-                            UpdateTextScrollbars();
-                    }
-                    catch (Exception ex) { MessageBox.Show($"ファイルの再読み込みに失敗しました:\n{ex.Message}", "エラー", MessageBoxButtons.OK, MessageBoxIcon.Error); }
-                };
+                fileWatcher.EnableRaisingEvents = false;
+                if (string.IsNullOrWhiteSpace(currentFilePath)) return;
+
+                var fullPath = Path.GetFullPath(currentFilePath);
+                var directory = Path.GetDirectoryName(fullPath);
+                var fileName = Path.GetFileName(fullPath);
+                if (string.IsNullOrEmpty(directory) || string.IsNullOrEmpty(fileName) || !Directory.Exists(directory)) return;
+
+                fileWatcher.Path = directory;
+                fileWatcher.Filter = fileName;
+                fileWatcher.EnableRaisingEvents = true;
+                EnsureXmlReloadTimer();
             }
+            catch { }
+        }
+
+        private void EnsureXmlReloadTimer()
+        {
+            if (reloadTimer != null) return;
+            reloadTimer = new System.Windows.Forms.Timer { Interval = 500 };
+            reloadTimer.Tick += async (s, e) =>
+            {
+                reloadTimer!.Stop();
+                try
+                {
+                    int selectedIndex = lstScripts!.SelectedIndex;
+                    await LoadXmlFileAsync();
+                    if (selectedIndex >= 0 && selectedIndex < lstScripts.Items.Count) lstScripts.SelectedIndex = selectedIndex;
+                    UpdateListScrollbar();
+                    UpdateTextScrollbars();
+                }
+                catch (Exception ex)
+                {
+                    MessageBox.Show($"ファイルの再読み込みに失敗しました:\n{ex.Message}", "エラー", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                }
+            };
+        }
+
+        private void SetupLuaFileWatcher(string? luaPath)
+        {
+            try
+            {
+                luaFileWatcher.EnableRaisingEvents = false;
+                currentLuaFilePath = string.IsNullOrWhiteSpace(luaPath) ? null : Path.GetFullPath(luaPath);
+                if (string.IsNullOrEmpty(currentLuaFilePath)) return;
+
+                var directory = Path.GetDirectoryName(currentLuaFilePath);
+                var fileName = Path.GetFileName(currentLuaFilePath);
+                if (string.IsNullOrEmpty(directory) || string.IsNullOrEmpty(fileName) || !Directory.Exists(directory))
+                {
+                    currentLuaFilePath = null;
+                    return;
+                }
+
+                luaFileWatcher.Path = directory;
+                luaFileWatcher.Filter = fileName;
+                luaFileWatcher.EnableRaisingEvents = true;
+                EnsureLuaReloadTimer();
+            }
+            catch { currentLuaFilePath = null; }
+        }
+
+        private void EnsureLuaReloadTimer()
+        {
+            if (luaReloadTimer != null) return;
+            luaReloadTimer = new System.Windows.Forms.Timer { Interval = 400 };
+            luaReloadTimer.Tick += async (s, e) =>
+            {
+                luaReloadTimer!.Stop();
+                if (string.IsNullOrEmpty(currentLuaFilePath) || txtNewScript == null) return;
+                try
+                {
+                    var caret = txtNewScript.SelectionStart;
+                    var text = await File.ReadAllTextAsync(currentLuaFilePath);
+                    txtNewScript.Text = text;
+                    txtNewScript.SelectionStart = Math.Min(caret, txtNewScript.TextLength);
+                    txtNewScript.SelectionLength = 0;
+                    txtNewScript.Modified = false;
+                    UpdateTextScrollbars();
+                }
+                catch (Exception ex)
+                {
+                    MessageBox.Show($"Luaファイルの再読み込みに失敗しました:\n{ex.Message}", "エラー", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                }
+            };
         }
 
         // Settings persistence
@@ -1083,7 +1166,21 @@ namespace StormworksLuaReplacer
 
         private void FileWatcher_Changed(object sender, FileSystemEventArgs e)
         {
+            if (!PathsEqual(e.FullPath, currentFilePath)) return;
             try { reloadTimer?.Stop(); reloadTimer?.Start(); } catch { }
+        }
+
+        private void LuaFileWatcher_Changed(object sender, FileSystemEventArgs e)
+        {
+            if (!PathsEqual(e.FullPath, currentLuaFilePath)) return;
+            try { luaReloadTimer?.Stop(); luaReloadTimer?.Start(); } catch { }
+        }
+
+        private static bool PathsEqual(string? left, string? right)
+        {
+            if (string.IsNullOrWhiteSpace(left) || string.IsNullOrWhiteSpace(right)) return false;
+            try { return string.Equals(Path.GetFullPath(left), Path.GetFullPath(right), StringComparison.OrdinalIgnoreCase); }
+            catch { return false; }
         }
 
         private void BtnSaveAs_Click(object? sender, EventArgs e)
@@ -1159,7 +1256,14 @@ namespace StormworksLuaReplacer
             base.WndProc(ref m);
         }
 
-        protected override void OnFormClosed(FormClosedEventArgs e) { base.OnFormClosed(e); }
+        protected override void OnFormClosed(FormClosedEventArgs e)
+        {
+            base.OnFormClosed(e);
+            try { fileWatcher.Dispose(); } catch { }
+            try { luaFileWatcher.Dispose(); } catch { }
+            try { reloadTimer?.Stop(); luaReloadTimer?.Stop(); } catch { }
+            try { reloadTimer?.Dispose(); luaReloadTimer?.Dispose(); } catch { }
+        }
 
         [STAThread]
         static void Main() { Application.EnableVisualStyles(); Application.SetCompatibleTextRenderingDefault(false); Application.Run(new MainForm()); }
