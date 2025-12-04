@@ -8,6 +8,7 @@ using System.Xml;
 using System.Xml.Linq;
 using System.Threading.Tasks;
 using System.Text.Json;
+using System.Runtime.InteropServices;
 
 namespace StormworksLuaReplacer
 {
@@ -56,6 +57,19 @@ namespace StormworksLuaReplacer
 
     public partial class MainForm : Form
     {
+        [DllImport("user32.dll", CharSet = CharSet.Auto, SetLastError = true)]
+        private static extern IntPtr SetWindowsHookEx(int idHook, LowLevelKeyboardProc lpfn, IntPtr hMod, uint dwThreadId);
+
+        [DllImport("user32.dll", CharSet = CharSet.Auto, SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool UnhookWindowsHookEx(IntPtr hhk);
+
+        [DllImport("user32.dll", CharSet = CharSet.Auto, SetLastError = true)]
+        private static extern IntPtr CallNextHookEx(IntPtr hhk, int nCode, IntPtr wParam, IntPtr lParam);
+
+        [DllImport("kernel32.dll", CharSet = CharSet.Auto, SetLastError = true)]
+        private static extern IntPtr GetModuleHandle(string lpModuleName);
+
         private Point resizeStart;
         private Rectangle resizeStartBounds;
         private bool isResizing = false;
@@ -67,6 +81,7 @@ namespace StormworksLuaReplacer
         private readonly FileSystemWatcher fileWatcher;
         private readonly FileSystemWatcher luaFileWatcher;
         private readonly ApplicationState appState = new ApplicationState();
+        private bool suppressMessages = false;
 
         private Label? lblFilePath;
         private ModernDropdown? cbRecentFiles;
@@ -114,9 +129,28 @@ namespace StormworksLuaReplacer
         private System.Windows.Forms.Timer? reloadTimer;
         private System.Windows.Forms.Timer? luaReloadTimer;
 
+        // Global keyboard hook
+        private const int WH_KEYBOARD_LL = 13;
+        private const int WM_KEYDOWN = 0x0100;
+        private const int WM_KEYUP = 0x0101;
+        private const int WM_SYSKEYDOWN = 0x0104;
+        private const int WM_SYSKEYUP = 0x0105;
+        private delegate IntPtr LowLevelKeyboardProc(int nCode, IntPtr wParam, IntPtr lParam);
+        private IntPtr _hookID = IntPtr.Zero;
+        private LowLevelKeyboardProc _proc;
+
         public MainForm()
         {
             InitializeComponent();
+
+            this.KeyPreview = true;
+
+            this.KeyDown += MainForm_KeyDown;
+
+            // Install global keyboard hook
+            _proc = HookCallback;
+            _hookID = SetWindowsHookEx(WH_KEYBOARD_LL, _proc, GetModuleHandle(null), 0);
+
             LoadSettings();
             // Populate recent-files dropdown after settings are loaded
             UpdateRecentCombo();
@@ -935,19 +969,56 @@ namespace StormworksLuaReplacer
             selectedScript.Script = txtNewScript.Text;
             selectedScript.WasReplaced = true;
             txtCurrentScript!.Text = txtNewScript.Text;
-            MessageBox.Show("スクリプトを置換しました。保存するには「XMLを保存」ボタンをクリックしてください。", "成功", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            if (!suppressMessages) MessageBox.Show("スクリプトを置換しました。保存するには「XMLを保存」ボタンをクリックしてください。", "成功", MessageBoxButtons.OK, MessageBoxIcon.Information);
+        }
+
+        private void MainForm_KeyDown(object? sender, KeyEventArgs e)
+        {
+            if (e.Control && e.Shift && e.KeyCode == Keys.F5)
+            {
+                suppressMessages = true;
+                BtnReplace_Click(null, EventArgs.Empty);
+                BtnSave_Click(null, EventArgs.Empty);
+                suppressMessages = false;
+                e.Handled = true;
+            }
+        }
+
+        private IntPtr HookCallback(int nCode, IntPtr wParam, IntPtr lParam)
+        {
+            if (nCode >= 0 && wParam == (IntPtr)WM_KEYDOWN)
+            {
+                int vkCode = Marshal.ReadInt32(lParam);
+                Keys key = (Keys)vkCode;
+                if ((Control.ModifierKeys & Keys.Control) != 0 && (Control.ModifierKeys & Keys.Shift) != 0 && key == Keys.F5)
+                {
+                    // Execute shortcut
+                    suppressMessages = true;
+                    BtnReplace_Click(null, EventArgs.Empty);
+                    BtnSave_Click(null, EventArgs.Empty);
+                    suppressMessages = false;
+                    return (IntPtr)1; // Prevent further processing
+                }
+            }
+            return CallNextHookEx(_hookID, nCode, wParam, lParam);
+        }
+
+        protected override void OnFormClosing(FormClosingEventArgs e)
+        {
+            UnhookWindowsHookEx(_hookID);
+            base.OnFormClosing(e);
         }
 
         private async void BtnSave_Click(object? sender, EventArgs e)
         {
             if (vehicleXml == null || string.IsNullOrEmpty(currentFilePath)) { MessageBox.Show("XMLファイルが読み込まれていません。", "警告", MessageBoxButtons.OK, MessageBoxIcon.Warning); return; }
-            try { await SaveXmlFileAsync(currentFilePath); MessageBox.Show("XMLファイルを保存しました。", "成功", MessageBoxButtons.OK, MessageBoxIcon.Information); }
+            try { await SaveXmlFileAsync(currentFilePath); if (!suppressMessages) MessageBox.Show("XMLファイルを保存しました。", "成功", MessageBoxButtons.OK, MessageBoxIcon.Information); }
             catch (Exception ex) { MessageBox.Show($"XMLファイルの保存に失敗しました:\n{ex.Message}", "エラー", MessageBoxButtons.OK, MessageBoxIcon.Error); }
         }
 
         private async Task LoadXmlFileAsync()
         {
-            if (string.IsNullOrEmpty(currentFilePath)) return;
+            if (string.IsNullOrEmpty(currentFilePath) || !File.Exists(currentFilePath)) return;
             
             vehicleXml = await Task.Run(() =>
             {
@@ -1181,6 +1252,12 @@ namespace StormworksLuaReplacer
         private void FileWatcher_Changed(object sender, FileSystemEventArgs e)
         {
             if (!PathsEqual(e.FullPath, currentFilePath)) return;
+            if (e.ChangeType == WatcherChangeTypes.Deleted)
+            {
+                vehicleXml = null;
+                UpdateUI();
+                return;
+            }
             try { reloadTimer?.Stop(); reloadTimer?.Start(); } catch { }
         }
 
