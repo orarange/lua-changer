@@ -183,7 +183,7 @@ namespace StormworksLuaReplacer
         private async Task StartHttpServer()
         {
             httpListener = new HttpListener();
-            httpListener.Prefixes.Add("http://localhost:2345/");
+            httpListener.Prefixes.Add("http://127.0.0.1:2345/");
             httpListener.Start();
             while (true)
             {
