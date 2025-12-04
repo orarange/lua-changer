@@ -187,7 +187,27 @@ namespace StormworksLuaReplacer
             httpListener.Start();
             while (true)
             {
-                var context = await httpListener.GetContextAsync();
+                HttpListenerContext context;
+                try
+                {
+                    context = await httpListener.GetContextAsync();
+                }
+                catch (HttpListenerException)
+                {
+                    // Listener was stopped or suffered an error - exit loop
+                    break;
+                }
+                catch (ObjectDisposedException)
+                {
+                    // Listener disposed - exit loop
+                    break;
+                }
+                catch (InvalidOperationException)
+                {
+                    // Listener not in a valid state - exit loop
+                    break;
+                }
+
                 var request = context.Request;
                 var response = context.Response;
                 if (request.Url.AbsolutePath == "/replace" && request.HttpMethod == "GET")
@@ -253,7 +273,11 @@ namespace StormworksLuaReplacer
                 {
                     response.StatusCode = 404;
                 }
-                response.OutputStream.Close();
+                try
+                {
+                    response.OutputStream.Close();
+                }
+                catch { }
             }
         }
 
@@ -1118,8 +1142,19 @@ namespace StormworksLuaReplacer
 
         protected override void OnFormClosing(FormClosingEventArgs e)
         {
-            httpListener?.Stop();
-            UnhookWindowsHookEx(_hookID);
+            // Stop and close HttpListener safely; it may already be stopped/disposed.
+            try
+            {
+                if (httpListener != null)
+                {
+                    try { if (httpListener.IsListening) httpListener.Stop(); } catch { }
+                    try { httpListener.Close(); } catch { }
+                    httpListener = null;
+                }
+            }
+            catch { }
+
+            try { UnhookWindowsHookEx(_hookID); } catch { }
             base.OnFormClosing(e);
         }
 
