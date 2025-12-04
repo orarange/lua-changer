@@ -9,6 +9,7 @@ using System.Xml.Linq;
 using System.Threading.Tasks;
 using System.Text.Json;
 using System.Runtime.InteropServices;
+using System.Net;
 
 namespace StormworksLuaReplacer
 {
@@ -82,6 +83,8 @@ namespace StormworksLuaReplacer
         private readonly FileSystemWatcher luaFileWatcher;
         private readonly ApplicationState appState = new ApplicationState();
         private bool suppressMessages = false;
+        private bool isHttpRequest = false;
+        private HttpListener? httpListener;
 
         private Label? lblFilePath;
         private ModernDropdown? cbRecentFiles;
@@ -172,6 +175,98 @@ namespace StormworksLuaReplacer
             luaFileWatcher.Created += LuaFileWatcher_Changed;
             luaFileWatcher.Deleted += LuaFileWatcher_Changed;
             luaFileWatcher.Renamed += LuaFileWatcher_Changed;
+
+            // Start HTTP server
+            Task.Run(() => StartHttpServer());
+        }
+
+        private async Task StartHttpServer()
+        {
+            httpListener = new HttpListener();
+            httpListener.Prefixes.Add("http://localhost:2345/");
+            httpListener.Start();
+            while (true)
+            {
+                var context = await httpListener.GetContextAsync();
+                var request = context.Request;
+                var response = context.Response;
+                if (request.Url.AbsolutePath == "/replace" && request.HttpMethod == "GET")
+                {
+                    string? errorMessage = null;
+                    // UI スレッド上での処理を非同期に実行し、その完了を待つ。
+                    var asyncResult = this.BeginInvoke(new Action(() =>
+                    {
+                        try
+                        {
+                            isHttpRequest = true;
+                            if (vehicleXml == null || lstScripts!.SelectedIndex < 0)
+                            {
+                                errorMessage = "XML file is not loaded or no script is selected.";
+                                return;
+                            }
+                            suppressMessages = true;
+                            BtnReplace_Click(null, EventArgs.Empty);
+                            BtnSaveSync();
+                            suppressMessages = false;
+                        }
+                        catch (Exception ex)
+                        {
+                            errorMessage = ex.Message;
+                        }
+                        finally
+                        {
+                            isHttpRequest = false;
+                        }
+                    }));
+
+                    try
+                    {
+                        // UI スレッド側の処理が終わるまで待機（HTTP スレッドをブロックするが、UI はブロックされない）
+                        this.EndInvoke(asyncResult);
+                    }
+                    catch (Exception ex)
+                    {
+                        // EndInvoke による例外はここで拾っておく
+                        if (string.IsNullOrEmpty(errorMessage)) errorMessage = ex.Message;
+                    }
+
+                    string responseString;
+                    if (string.IsNullOrEmpty(errorMessage))
+                    {
+                        // 成功: Lua 側の判定が期待するパターンを含める
+                        var payload = new { status = "success", message = "Files updated successfully." };
+                        responseString = System.Text.Json.JsonSerializer.Serialize(payload);
+                    }
+                    else
+                    {
+                        // 失敗: success パターンを含めないようにする
+                        var reason = TranslateErrorToEnglish(errorMessage);
+                        var payload = new { status = "error", reason = reason };
+                        responseString = System.Text.Json.JsonSerializer.Serialize(payload);
+                    }
+                    byte[] buffer = System.Text.Encoding.UTF8.GetBytes(responseString);
+                    response.ContentType = "text/plain; charset=utf-8";
+                    response.ContentLength64 = buffer.Length;
+                    await response.OutputStream.WriteAsync(buffer, 0, buffer.Length);
+                }
+                else
+                {
+                    response.StatusCode = 404;
+                }
+                response.OutputStream.Close();
+            }
+        }
+
+        private async Task BtnSaveAsync()
+        {
+            if (vehicleXml == null || string.IsNullOrEmpty(currentFilePath)) { throw new Exception("XMLファイルが読み込まれていません。"); }
+            await SaveXmlFileAsync(currentFilePath);
+        }
+
+        private void BtnSaveSync()
+        {
+            if (vehicleXml == null || string.IsNullOrEmpty(currentFilePath)) { throw new Exception("XMLファイルが読み込まれていません。"); }
+            SaveXmlFileAsync(currentFilePath).Wait();
         }
 
         private void AttachMouseHandlers(Control parent)
@@ -962,14 +1057,32 @@ namespace StormworksLuaReplacer
 
         private void BtnReplace_Click(object? sender, EventArgs e)
         {
-            if (lstScripts!.SelectedIndex < 0) { MessageBox.Show("置換するスクリプトを選択してください。", "警告", MessageBoxButtons.OK, MessageBoxIcon.Warning); return; }
-            if (string.IsNullOrWhiteSpace(txtNewScript!.Text)) { MessageBox.Show("新しいスクリプトを入力してください。", "警告", MessageBoxButtons.OK, MessageBoxIcon.Warning); return; }
+            if (lstScripts!.SelectedIndex < 0)
+            {
+                string msg = "置換するスクリプトを選択してください。";
+                if (!suppressMessages && !isHttpRequest)
+                {
+                    MessageBox.Show(msg, "警告", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    return;
+                }
+                throw new Exception(msg);
+            }
+            if (string.IsNullOrWhiteSpace(txtNewScript!.Text))
+            {
+                string msg = "新しいスクリプトを入力してください。";
+                if (!suppressMessages && !isHttpRequest)
+                {
+                    MessageBox.Show(msg, "警告", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    return;
+                }
+                throw new Exception(msg);
+            }
             var selectedScript = luaScripts[lstScripts.SelectedIndex];
             selectedScript.Attribute.Value = txtNewScript.Text;
             selectedScript.Script = txtNewScript.Text;
             selectedScript.WasReplaced = true;
             txtCurrentScript!.Text = txtNewScript.Text;
-            if (!suppressMessages) MessageBox.Show("スクリプトを置換しました。保存するには「XMLを保存」ボタンをクリックしてください。", "成功", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            if (!suppressMessages && !isHttpRequest) MessageBox.Show("スクリプトを置換しました。保存するには「XMLを保存」ボタンをクリックしてください。", "成功", MessageBoxButtons.OK, MessageBoxIcon.Information);
         }
 
         private void MainForm_KeyDown(object? sender, KeyEventArgs e)
@@ -1005,6 +1118,7 @@ namespace StormworksLuaReplacer
 
         protected override void OnFormClosing(FormClosingEventArgs e)
         {
+            httpListener?.Stop();
             UnhookWindowsHookEx(_hookID);
             base.OnFormClosing(e);
         }
@@ -1046,7 +1160,7 @@ namespace StormworksLuaReplacer
                                      .Where(s => !(s.Script?.TrimStart().StartsWith(prefix, StringComparison.OrdinalIgnoreCase) ?? false))
                                      .ToList();
 
-            if (toUpdate.Count > 0 && !appState.SuppressPrefixPrompt)
+            if (toUpdate.Count > 0 && !appState.SuppressPrefixPrompt && !isHttpRequest)
             {
                 using (var dlg = new PrefixConfirmDialog(toUpdate.Select(s => s.DisplayName).ToList()))
                 {
@@ -1074,7 +1188,27 @@ namespace StormworksLuaReplacer
 
                 var settings = new System.Xml.XmlWriterSettings { Encoding = System.Text.Encoding.UTF8, Indent = true };
                 using (var writer = System.Xml.XmlWriter.Create(path, settings)) vehicleXml!.Save(writer);
-            });
+            }).ConfigureAwait(false);
+        }
+
+        // Translate known Japanese error messages into English for Stormworks HTTP responses
+        private string TranslateErrorToEnglish(string? msg)
+        {
+            if (string.IsNullOrWhiteSpace(msg)) return "An unknown error occurred.";
+            // Normalize
+            var m = msg.Trim();
+            if (m.Contains("XMLファイルが読み込まれていないか、スクリプトが選択されていません")) return "XML file not loaded or no script selected.";
+            if (m.Contains("置換するスクリプトを選択してください")) return "Please select a script to replace.";
+            if (m.Contains("新しいスクリプトを入力してください")) return "Please provide a new script.";
+            if (m.Contains("XMLファイルが読み込まれていません")) return "XML file is not loaded.";
+            if (m.Contains("Luaファイルの読み込みに失敗しました")) return m.Replace("Luaファイルの読み込みに失敗しました:", "Failed to load Lua file:");
+            if (m.Contains("XMLファイルの読み込みに失敗しました")) return m.Replace("XMLファイルの読み込みに失敗しました:", "Failed to load XML file:");
+            if (m.Contains("XMLファイルの保存に失敗しました")) return m.Replace("XMLファイルの保存に失敗しました:", "Failed to save XML file:");
+            // If message appears to already be English, return as-is
+            bool looksEnglish = System.Text.RegularExpressions.Regex.IsMatch(m, "[a-zA-Z]{2,}");
+            if (looksEnglish) return m;
+            // Fallback: return generic English message with original appended
+            return "Error: " + m;
         }
 
         private void SetupFileWatcher()
