@@ -4,6 +4,7 @@ using System.Drawing;
 using System.IO;
 using System.Linq;
 using System.Windows.Forms;
+using System.Xml;
 using System.Xml.Linq;
 using System.Threading.Tasks;
 using System.Text.Json;
@@ -947,7 +948,20 @@ namespace StormworksLuaReplacer
         private async Task LoadXmlFileAsync()
         {
             if (string.IsNullOrEmpty(currentFilePath)) return;
-            vehicleXml = await Task.Run(() => XDocument.Load(currentFilePath));
+            
+            vehicleXml = await Task.Run(() =>
+            {
+                // XmlTextReaderを使用してNormalizationをfalseに設定しないと、
+                // LoadOptions.PreserveWhitespaceを指定しても属性値の改行がスペースに置換されてしまう
+                using (var reader = new XmlTextReader(currentFilePath))
+                {
+                    reader.Normalization = false;
+                    return XDocument.Load(reader, LoadOptions.PreserveWhitespace);
+                }
+            });
+
+            System.Console.WriteLine("Content:");
+            System.Console.WriteLine(vehicleXml.ToString());
             ExtractLuaScripts();
             UpdateUI();
         }

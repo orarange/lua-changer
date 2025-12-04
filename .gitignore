@@ -7,3 +7,9 @@ obj
 bin
 CODE_REVIEW.md
 test.cs
+UH1 - コピー copy.xml
+UH1 - コピー.xml
+.github/prompts/savePrompt.prompt.md
+.vscode/launch.json
+.gitignore
+.vscode/tasks.json
