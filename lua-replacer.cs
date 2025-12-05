@@ -1106,7 +1106,17 @@ namespace StormworksLuaReplacer
             selectedScript.Script = txtNewScript.Text;
             selectedScript.WasReplaced = true;
             txtCurrentScript!.Text = txtNewScript.Text;
-            if (!suppressMessages && !isHttpRequest) MessageBox.Show("スクリプトを置換しました。保存するには「XMLを保存」ボタンをクリックしてください。", "成功", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            if (!isHttpRequest)
+            {
+                if (suppressMessages)
+                {
+                    try { System.Media.SystemSounds.Asterisk.Play(); } catch { }
+                }
+                else
+                {
+                    MessageBox.Show("スクリプトを置換しました。保存するには「XMLを保存」ボタンをクリックしてください。", "成功", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                }
+            }
         }
 
         private void MainForm_KeyDown(object? sender, KeyEventArgs e)
