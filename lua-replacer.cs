@@ -126,6 +126,7 @@ namespace StormworksLuaReplacer
         private const int SB_BOTTOM = 7;
 
         private const int WM_NCHITTEST = 0x0084;
+        private const int WM_MOUSEWHEEL = 0x020A;
         private const int HTCLIENT = 1;
         private const int HTCAPTION = 2;
         private const int HTLEFT = 10;
@@ -1814,6 +1815,54 @@ namespace StormworksLuaReplacer
 
         protected override void WndProc(ref Message m)
         {
+            // Intercept mouse wheel at window level and dispatch to control under cursor
+            if (m.Msg == WM_MOUSEWHEEL)
+            {
+                try
+                {
+                    int w = m.WParam.ToInt32();
+                    int delta = (short)(w >> 16);
+                    int l = m.LParam.ToInt32();
+                    int sx = (short)(l & 0xffff);
+                    int sy = (short)((l >> 16) & 0xffff);
+                    var screenPoint = new Point(sx, sy);
+                    var clientPoint = this.PointToClient(screenPoint);
+                    var child = this.GetChildAtPoint(clientPoint);
+                    // find deepest child at point
+                    Control? target = child;
+                    while (target != null)
+                    {
+                        var local = target.PointToClient(screenPoint);
+                        var inner = target.GetChildAtPoint(local);
+                        if (inner == null) break;
+                        target = inner;
+                    }
+
+                    // If the control under cursor is (or contains) txtNewScript or txtCurrentScript, scroll that control
+                    Control? tb = null;
+                    if (target != null)
+                    {
+                        if (target == txtNewScript || (txtNewScript != null && IsChildOf(txtNewScript, target))) tb = txtNewScript;
+                        else if (target == txtCurrentScript || (txtCurrentScript != null && IsChildOf(txtCurrentScript, target))) tb = txtCurrentScript;
+                    }
+
+                    if (tb != null)
+                    {
+                        // perform page scroll based on delta
+                        int pages = Math.Max(1, Math.Abs(delta) / 120);
+                        for (int i = 0; i < pages; i++)
+                        {
+                            if (delta < 0) SendMessage(tb.Handle, WM_VSCROLL, (IntPtr)SB_PAGEDOWN, IntPtr.Zero);
+                            else SendMessage(tb.Handle, WM_VSCROLL, (IntPtr)SB_PAGEUP, IntPtr.Zero);
+                        }
+                        UpdateTextScrollbars();
+                        if (tb == txtNewScript) SyncVScrollFromText(txtNewScript, vScrollNew);
+                        else SyncVScrollFromText(txtCurrentScript, vScrollCurrent);
+                        return; // consumed
+                    }
+                }
+                catch { }
+            }
             if (m.Msg == WM_NCHITTEST)
             {
                 base.WndProc(ref m);
@@ -1854,6 +1903,18 @@ namespace StormworksLuaReplacer
                 return;
             }
             base.WndProc(ref m);
+        }
+
+        private bool IsChildOf(Control parent, Control potentialChild)
+        {
+            if (parent == null || potentialChild == null) return false;
+            Control? p = potentialChild;
+            while (p != null)
+            {
+                if (p == parent) return true;
+                p = p.Parent;
+            }
+            return false;
         }
 
         protected override void OnFormClosed(FormClosedEventArgs e)
