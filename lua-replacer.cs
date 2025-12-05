@@ -89,15 +89,17 @@ namespace StormworksLuaReplacer
         private Label? lblFilePath;
         private ModernDropdown? cbRecentFiles;
         private ListBox? lstScripts;
-        private TextBox? txtCurrentScript;
-        private TextBox? txtNewScript;
+        private System.Windows.Forms.RichTextBox? txtCurrentScript;
+        private System.Windows.Forms.RichTextBox? txtNewScript;
+        private System.Windows.Forms.Timer? highlightTimer;
+        private System.Windows.Forms.RichTextBox? highlightTarget;
         private Panel? pnlTitleBar;
         private Panel? titleRightSpacer;
         private Panel? pnlCurrentBorder;
         private Panel? pnlNewBorder;
-        private CustomVScroll? vScrollList;
-        private CustomVScroll? vScrollCurrent;
-        private CustomVScroll? vScrollNew;
+        private System.Windows.Forms.VScrollBar? vScrollList;
+        private System.Windows.Forms.VScrollBar? vScrollCurrent;
+        private System.Windows.Forms.VScrollBar? vScrollNew;
         // status strip removed to avoid interfering with window resizing
         private Color accentColor = Color.FromArgb(0, 122, 204);
         
@@ -445,8 +447,8 @@ namespace StormworksLuaReplacer
         {
             lblFilePath = new Label { Text = "ファイル: 未選択", Dock = DockStyle.Fill, AutoSize = false, TextAlign = System.Drawing.ContentAlignment.MiddleLeft };
             lstScripts = new ListBox { Dock = DockStyle.Fill, Height = 300 };
-            txtCurrentScript = new TextBox { Multiline = true, Dock = DockStyle.Fill, ScrollBars = ScrollBars.Both, Font = new System.Drawing.Font("Consolas", 10), ReadOnly = true, BorderStyle = BorderStyle.None };
-            txtNewScript = new TextBox { Multiline = true, Dock = DockStyle.Fill, ScrollBars = ScrollBars.Both, Font = new System.Drawing.Font("Consolas", 10), BorderStyle = BorderStyle.None };
+            txtCurrentScript = new System.Windows.Forms.RichTextBox { Multiline = true, Dock = DockStyle.Fill, Font = new System.Drawing.Font("Consolas", 10), ReadOnly = true, BorderStyle = BorderStyle.None, WordWrap = false, ScrollBars = RichTextBoxScrollBars.Horizontal };
+            txtNewScript = new System.Windows.Forms.RichTextBox { Multiline = true, Dock = DockStyle.Fill, Font = new System.Drawing.Font("Consolas", 10), BorderStyle = BorderStyle.None, WordWrap = false, ScrollBars = RichTextBoxScrollBars.Horizontal };
             this.FormBorderStyle = FormBorderStyle.None;
             this.Text = "";
             pnlTitleBar = new Panel
@@ -607,7 +609,7 @@ namespace StormworksLuaReplacer
                 UpdateTextScrollbars();
                 SyncVScrollFromText(txtCurrentScript, vScrollCurrent);
             };
-            txtCurrentScript.TextChanged += (s, e) => UpdateTextScrollbars();
+            txtCurrentScript.TextChanged += (s, e) => { UpdateTextScrollbars(); highlightTarget = txtCurrentScript; highlightTimer?.Stop(); highlightTimer?.Start(); };
             var grpCurrentScript = new GroupBox { Text = "現在のスクリプト", Dock = DockStyle.Fill };
             grpCurrentScript.Controls.Add(pnlCurrentBorder);
 
@@ -628,7 +630,7 @@ namespace StormworksLuaReplacer
                 UpdateTextScrollbars();
                 SyncVScrollFromText(txtNewScript, vScrollNew);
             };
-            txtNewScript.TextChanged += (s, e) => UpdateTextScrollbars();
+            txtNewScript.TextChanged += (s, e) => { UpdateTextScrollbars(); highlightTarget = txtNewScript; highlightTimer?.Stop(); highlightTimer?.Start(); };
             var grpNewScript = new GroupBox { Text = "新しいスクリプト", Dock = DockStyle.Fill };
             grpNewScript.Controls.Add(pnlNewBorder);
             var mainLayout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 2, Padding = new Padding(10) };
@@ -668,12 +670,12 @@ namespace StormworksLuaReplacer
             mainLayout.Controls.Add(xmlPanel, 0, 0);
             mainLayout.SetColumnSpan(xmlPanel, 2);
             // create custom scrollbars and add to respective containers
-            vScrollList = new CustomVScroll { Dock = DockStyle.Right, Width = 14 };
+            vScrollList = new System.Windows.Forms.VScrollBar { Dock = DockStyle.Right, Width = 14 };
             // attach scrollbar to the scripts list inside the left XML area
             xmlInner.Controls.Add(vScrollList);
             vScrollList.ValueChanged += (s, e) => { if (lstScripts != null) lstScripts.TopIndex = vScrollList.Value; };
 
-            vScrollCurrent = new CustomVScroll { Dock = DockStyle.Right, Width = 14 };
+            vScrollCurrent = new System.Windows.Forms.VScrollBar { Dock = DockStyle.Right, Width = 14 };
             pnlCurrentBorder!.Controls.Add(vScrollCurrent);
             vScrollCurrent.ValueChanged += (s, e) =>
             {
@@ -691,7 +693,7 @@ namespace StormworksLuaReplacer
                 }
             };
 
-            vScrollNew = new CustomVScroll { Dock = DockStyle.Right, Width = 14 };
+            vScrollNew = new System.Windows.Forms.VScrollBar { Dock = DockStyle.Right, Width = 14 };
             pnlNewBorder!.Controls.Add(vScrollNew);
             vScrollNew.ValueChanged += (s, e) =>
             {
@@ -727,6 +729,18 @@ namespace StormworksLuaReplacer
             this.MainMenuStrip = menuStrip;
             ApplyTheme();
             // initialize scrollbar ranges / hide native scrollbars
+            // create highlight timer
+            highlightTimer = new System.Windows.Forms.Timer { Interval = 250 };
+            highlightTimer.Tick += (s, e) =>
+            {
+                try
+                {
+                    highlightTimer!.Stop();
+                    if (highlightTarget != null) HighlightLua(highlightTarget);
+                }
+                catch { }
+            };
+
             UpdateListScrollbar();
             UpdateTextScrollbars();
         }
@@ -889,6 +903,93 @@ namespace StormworksLuaReplacer
             }
         }
 
+        private void HighlightLua(System.Windows.Forms.RichTextBox rtb)
+        {
+            if (rtb == null) return;
+            int selStart = rtb.SelectionStart;
+            int selLen = rtb.SelectionLength;
+            try { rtb.SuspendLayout(); } catch { }
+            try { SuspendDrawing(rtb); } catch { }
+            try
+            {
+                var originalColor = rtb.ForeColor;
+                string text = rtb.Text;
+                if (string.IsNullOrEmpty(text)) return;
+
+                // Determine visible character range (visible lines only) with a small margin
+                int topChar = rtb.GetCharIndexFromPosition(new Point(0, 0));
+                int bottomChar = rtb.GetCharIndexFromPosition(new Point(0, Math.Max(0, rtb.ClientSize.Height - 1)));
+                int firstLine = Math.Max(0, rtb.GetLineFromCharIndex(topChar) - 2);
+                int lastLine = Math.Min(Math.Max(0, rtb.Lines.Length - 1), rtb.GetLineFromCharIndex(bottomChar) + 2);
+                int startIndex = (firstLine < rtb.Lines.Length) ? rtb.GetFirstCharIndexFromLine(firstLine) : 0;
+                int endIndex = (lastLine + 1 < rtb.Lines.Length) ? rtb.GetFirstCharIndexFromLine(lastLine + 1) : rtb.TextLength;
+                if (startIndex < 0) startIndex = 0;
+                if (endIndex < startIndex) endIndex = rtb.TextLength;
+                int length = Math.Max(0, Math.Min(rtb.TextLength - startIndex, endIndex - startIndex));
+
+                // If visible region is very small or text is tiny, fall back to full highlight
+                if (rtb.TextLength < 2000 || length == rtb.TextLength)
+                {
+                    // small text - highlight whole content
+                    rtb.SelectAll();
+                    rtb.SelectionColor = originalColor;
+                    startIndex = 0; length = rtb.TextLength;
+                }
+                else
+                {
+                    // reset visible range only
+                    rtb.Select(startIndex, length);
+                    rtb.SelectionColor = originalColor;
+                }
+
+                if (length <= 0) return;
+
+                string visibleText = rtb.Text.Substring(startIndex, length);
+
+                // Strings ("...")
+                foreach (System.Text.RegularExpressions.Match m in System.Text.RegularExpressions.Regex.Matches(visibleText, "\"([^\\\"]|\\.)*\""))
+                {
+                    rtb.Select(startIndex + m.Index, m.Length);
+                    rtb.SelectionColor = Color.FromArgb(206, 145, 120); // string color
+                }
+
+                // Comments (-- ... to end of line)
+                foreach (System.Text.RegularExpressions.Match m in System.Text.RegularExpressions.Regex.Matches(visibleText, "--.*?$", System.Text.RegularExpressions.RegexOptions.Multiline))
+                {
+                    rtb.Select(startIndex + m.Index, m.Length);
+                    rtb.SelectionColor = Color.FromArgb(106, 153, 85); // comment color
+                }
+
+                // Keywords
+                string[] keywords = new[] { "and","break","do","else","elseif","end","false","for","function","if","in","local","nil","not","or","repeat","return","then","true","until","while" };
+                foreach (var kw in keywords)
+                {
+                    foreach (System.Text.RegularExpressions.Match m in System.Text.RegularExpressions.Regex.Matches(visibleText, $"\\b{System.Text.RegularExpressions.Regex.Escape(kw)}\\b"))
+                    {
+                        rtb.Select(startIndex + m.Index, m.Length);
+                        rtb.SelectionColor = Color.FromArgb(86, 156, 214); // keyword color
+                    }
+                }
+            }
+            catch { }
+            finally
+            {
+                try { rtb.Select(selStart, selLen); rtb.SelectionColor = rtb.ForeColor; } catch { }
+                try { ResumeDrawing(rtb); } catch { }
+                try { rtb.ResumeLayout(); } catch { }
+            }
+        }
+
+        private const int WM_SETREDRAW = 0x000B;
+        private void SuspendDrawing(Control c)
+        {
+            try { SendMessage(c.Handle, WM_SETREDRAW, IntPtr.Zero, IntPtr.Zero); } catch { }
+        }
+        private void ResumeDrawing(Control c)
+        {
+            try { SendMessage(c.Handle, WM_SETREDRAW, new IntPtr(1), IntPtr.Zero); c.Invalidate(); } catch { }
+        }
+
         private async void BtnLoadXml_Click(object? sender, EventArgs e)
         {
             using var openFileDialog = new OpenFileDialog { Filter = "XML files (*.xml)|*.xml|All files (*.*)|*.*", Title = "ビークルXMLファイルを選択" };
@@ -949,10 +1050,8 @@ namespace StormworksLuaReplacer
             int visible = Math.Max(1, lstScripts.ClientSize.Height / Math.Max(1, lstScripts.ItemHeight));
             int max = Math.Max(0, Math.Max(0, lstScripts.Items.Count - visible));
             vScrollList.Minimum = 0;
-            vScrollList.Maximum = max;
-            vScrollList.LargeChange = visible;
-            // set thumb pixel size to match visible items (approx)
-            try { vScrollList.ThumbSizePixels = visible * lstScripts.ItemHeight; } catch { vScrollList.ThumbSizePixels = 0; }
+            vScrollList.Maximum = Math.Max(0, max);
+            vScrollList.LargeChange = Math.Max(1, visible);
             try
             {
                 int top = lstScripts.TopIndex;
@@ -975,10 +1074,9 @@ namespace StormworksLuaReplacer
                 int visible = Math.Max(1, txtCurrentScript.ClientSize.Height / lineHeight);
                 int max = Math.Max(0, total - visible);
                 vScrollCurrent.Minimum = 0;
-                vScrollCurrent.Maximum = max;
-                vScrollCurrent.LargeChange = visible;
+                vScrollCurrent.Maximum = Math.Max(0, max);
+                vScrollCurrent.LargeChange = Math.Max(1, visible);
                 vScrollCurrent.Value = Math.Min(vScrollCurrent.Value, vScrollCurrent.Maximum);
-                try { vScrollCurrent.ThumbSizePixels = visible * lineHeight; } catch { vScrollCurrent.ThumbSizePixels = 0; }
                 try { ShowScrollBar(txtCurrentScript.Handle, SB_VERT, false); } catch { }
             }
             if (txtNewScript != null && vScrollNew != null)
@@ -988,15 +1086,14 @@ namespace StormworksLuaReplacer
                 int visible = Math.Max(1, txtNewScript.ClientSize.Height / lineHeight2);
                 int max = Math.Max(0, total - visible);
                 vScrollNew.Minimum = 0;
-                vScrollNew.Maximum = max;
-                vScrollNew.LargeChange = visible;
+                vScrollNew.Maximum = Math.Max(0, max);
+                vScrollNew.LargeChange = Math.Max(1, visible);
                 vScrollNew.Value = Math.Min(vScrollNew.Value, vScrollNew.Maximum);
-                try { vScrollNew.ThumbSizePixels = visible * lineHeight2; } catch { vScrollNew.ThumbSizePixels = 0; }
                 try { ShowScrollBar(txtNewScript.Handle, SB_VERT, false); } catch { }
             }
         }
 
-        private void SyncVScrollFromText(TextBox? tb, CustomVScroll? vs)
+        private void SyncVScrollFromText(System.Windows.Forms.RichTextBox? tb, System.Windows.Forms.VScrollBar? vs)
         {
             if (tb == null || vs == null) return;
             try
@@ -1622,136 +1719,7 @@ namespace StormworksLuaReplacer
         public bool WasReplaced { get; set; } = false;
     }
 
-    public class CustomVScroll : Control
-    {
-        private int _minimum = 0;
-        private int _maximum = 0;
-        private int _value = 0;
-        private bool dragging = false;
-        private int dragOffset = 0;
-        public int SmallChange { get; set; } = 1;
-        public int LargeChange { get; set; } = 10;
-        private int _thumbSizePixels = 0;
-        /// <summary>
-        /// Optional explicit thumb size in pixels. When > 0, this value is used
-        /// to determine the slider height, allowing the caller to set thumb
-        /// height based on visible line/item pixel height.
-        /// </summary>
-        public int ThumbSizePixels { get => _thumbSizePixels; set { _thumbSizePixels = Math.Max(0, value); Invalidate(); } }
-        public int Minimum { get => _minimum; set { _minimum = value; Invalidate(); } }
-        public int Maximum { get => _maximum; set { _maximum = Math.Max(0, value); Invalidate(); } }
-        public int Value
-        {
-            get => _value;
-            set
-            {
-                int v = Math.Max(Minimum, Math.Min(Maximum, value));
-                if (v == _value) return;
-                _value = v; Invalidate(); ValueChanged?.Invoke(this, EventArgs.Empty);
-            }
-        }
-
-        public event EventHandler? ValueChanged;
-
-        public CustomVScroll()
-        {
-            this.SetStyle(ControlStyles.OptimizedDoubleBuffer | ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint, true);
-            this.Width = 14;
-        }
-
-        protected override void OnPaint(PaintEventArgs e)
-        {
-            base.OnPaint(e);
-            var g = e.Graphics;
-            g.Clear(this.BackColor);
-            int h = this.ClientSize.Height;
-            int w = this.ClientSize.Width;
-            int range = Math.Max(1, Maximum - Minimum + 1);
-            int thumbHeight;
-            if (ThumbSizePixels > 0)
-            {
-                thumbHeight = Math.Max(12, Math.Min(h - 2, ThumbSizePixels));
-            }
-            else
-            {
-                // Chrome-like proportional thumb: thumbHeight = (visible / totalContent) * trackHeight
-                // totalContent approximated as (Maximum - Minimum + LargeChange)
-                int totalContent = Math.Max(1, (Maximum - Minimum + LargeChange));
-                double ratio = Math.Max(0.0, Math.Min(1.0, LargeChange / (double)totalContent));
-                thumbHeight = Math.Max(12, (int)(h * ratio));
-            }
-            int track = h - thumbHeight;
-            int thumbTop = track > 0 ? (int)(track * ((Value - Minimum) / (double)Math.Max(1, Maximum - Minimum))) : 0;
-            var trackRect = new Rectangle(0, 0, w, h);
-            using (var b = new SolidBrush(Color.Transparent)) { }
-            Color trackColor = this.Parent != null && this.Parent.BackColor != Color.Empty ? ControlPaint.Dark(this.Parent.BackColor) : Color.FromArgb(60, 60, 60);
-            using (var brush = new SolidBrush(trackColor)) g.FillRectangle(brush, trackRect);
-            var thumbRect = new Rectangle(1, thumbTop, w - 2, thumbHeight);
-            Color thumbColor = this.ForeColor;
-            using (var b2 = new SolidBrush(thumbColor)) g.FillRectangle(b2, thumbRect);
-        }
-
-        protected override void OnMouseDown(MouseEventArgs e)
-        {
-            base.OnMouseDown(e);
-            int h = this.ClientSize.Height;
-            int range = Math.Max(1, Maximum - Minimum + 1);
-            int thumbHeight;
-            if (ThumbSizePixels > 0)
-            {
-                thumbHeight = Math.Max(12, Math.Min(h - 2, ThumbSizePixels));
-            }
-            else
-            {
-                int totalContent = Math.Max(1, (Maximum - Minimum + LargeChange));
-                double ratio = Math.Max(0.0, Math.Min(1.0, LargeChange / (double)totalContent));
-                thumbHeight = Math.Max(12, (int)(h * ratio));
-            }
-            int track = h - thumbHeight;
-            int thumbTop = track > 0 ? (int)(track * ((Value - Minimum) / (double)Math.Max(1, Maximum - Minimum))) : 0;
-            var thumbRect = new Rectangle(1, thumbTop, this.ClientSize.Width - 2, thumbHeight);
-            if (thumbRect.Contains(e.Location))
-            {
-                dragging = true; dragOffset = e.Y - thumbTop;
-            }
-            else
-            {
-                // click on track: page up/down
-                if (e.Y < thumbTop) Value = Math.Max(Minimum, Value - LargeChange);
-                else Value = Math.Min(Maximum, Value + LargeChange);
-            }
-        }
-
-        protected override void OnMouseMove(MouseEventArgs e)
-        {
-            base.OnMouseMove(e);
-            if (!dragging) return;
-            int h = this.ClientSize.Height;
-            int range = Math.Max(1, Maximum - Minimum + 1);
-            int thumbHeight;
-            if (ThumbSizePixels > 0)
-            {
-                thumbHeight = Math.Max(12, Math.Min(h - 2, ThumbSizePixels));
-            }
-            else
-            {
-                int totalContent = Math.Max(1, (Maximum - Minimum + LargeChange));
-                double ratio = Math.Max(0.0, Math.Min(1.0, LargeChange / (double)totalContent));
-                thumbHeight = Math.Max(12, (int)(h * ratio));
-            }
-            int track = h - thumbHeight;
-            int y = e.Y - dragOffset;
-            y = Math.Max(0, Math.Min(track, y));
-            int newValue = Minimum + (int)( ( (double)y / Math.Max(1, track) ) * Math.Max(1, Maximum - Minimum) );
-            Value = newValue;
-        }
-
-        protected override void OnMouseUp(MouseEventArgs e)
-        {
-            base.OnMouseUp(e);
-            dragging = false;
-        }
-    }
+    
 
     // A lightweight modern dropdown control with a popup ListBox.
     public class ModernDropdown : Control
