@@ -22,6 +22,8 @@ namespace StormworksLuaReplacer
         public bool SuppressPrefixPrompt { get; set; } = false;
         public string SettingsFilePath { get; set; } = string.Empty;
         public List<string> RecentFiles { get; set; } = new List<string>();
+        // mapping key: "<vehicleXmlFullPath>|<scriptIndex>" -> lua file path
+        public Dictionary<string, string> ScriptFileMappings { get; set; } = new Dictionary<string, string>();
     }
 
     public class PrefixConfirmDialog : Form
@@ -88,7 +90,9 @@ namespace StormworksLuaReplacer
 
         private Label? lblFilePath;
         private ModernDropdown? cbRecentFiles;
+        private ModernDropdown? cbScriptFiles;
         private ListBox? lstScripts;
+        private FlowLayoutPanel? topControlsPanel;
         private System.Windows.Forms.RichTextBox? txtCurrentScript;
         private System.Windows.Forms.RichTextBox? txtNewScript;
         private System.Windows.Forms.Timer? highlightTimer;
@@ -642,7 +646,17 @@ namespace StormworksLuaReplacer
             // XML preview area (left column, spans top row)
             var xmlPanel = new Panel { Dock = DockStyle.Fill, Padding = new Padding(6), Tag = "xmlPanel" };
             // Recent-files dropdown (replaces simple file label)
-            cbRecentFiles = new ModernDropdown { Dock = DockStyle.Top, Height = 26 };
+            cbRecentFiles = new ModernDropdown { Width = 420, Height = 26 };
+            // Script-selection dropdown to the right of recent-files
+            cbScriptFiles = new ModernDropdown { Width = 260, Height = 26 };
+
+            // container for top controls (recent files + script selector)
+            this.topControlsPanel = new FlowLayoutPanel { Dock = DockStyle.Top, FlowDirection = FlowDirection.LeftToRight, Padding = new Padding(4), Margin = new Padding(0), WrapContents = true, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink };
+            cbRecentFiles.Margin = new Padding(4, 4, 4, 4);
+            cbScriptFiles.Margin = new Padding(4, 4, 4, 4);
+            this.topControlsPanel.Controls.Add(cbRecentFiles);
+            this.topControlsPanel.Controls.Add(cbScriptFiles);
+
             cbRecentFiles.SelectedIndexChanged += async (s, e) =>
             {
                 if (cbRecentFiles == null) return;
@@ -658,14 +672,56 @@ namespace StormworksLuaReplacer
                 }
                 catch (Exception ex) { MessageBox.Show($"XMLファイルの読み込みに失敗しました:\n{ex.Message}", "エラー", MessageBoxButtons.OK, MessageBoxIcon.Error); }
             };
+            cbScriptFiles.SelectedIndexChanged += (s, e) =>
+            {
+                try
+                {
+                    if (cbScriptFiles == null) return;
+                    var sel = cbScriptFiles.SelectedItem;
+                    if (string.IsNullOrWhiteSpace(sel)) return;
+                    // Determine directory from currentLuaFilePath or luaFileWatcher path
+                    string? dir = null;
+                    if (!string.IsNullOrWhiteSpace(currentLuaFilePath)) dir = Path.GetDirectoryName(currentLuaFilePath);
+                    if (string.IsNullOrWhiteSpace(dir) && luaFileWatcher != null) dir = luaFileWatcher.Path;
+                    if (string.IsNullOrWhiteSpace(dir)) return;
+                    var selectedFileName = sel;
+                    var full = Path.Combine(dir, selectedFileName);
+                    if (!File.Exists(full)) return;
+                    // Load file into new-script editor
+                    Task.Run(async () =>
+                    {
+                        try
+                        {
+                            var text = await File.ReadAllTextAsync(full).ConfigureAwait(false);
+                            this.BeginInvoke(new Action(() =>
+                            {
+                                txtNewScript!.Text = text;
+                                txtNewScript.Modified = false;
+                                currentLuaFilePath = full;
+                                SetupLuaFileWatcher(full);
+                                UpdateTextScrollbars();
+                            }));
+                        }
+                        catch { }
+                    });
+                }
+                catch { }
+            };
+            // adjust widths initially and when panel size changes
+            this.topControlsPanel.SizeChanged += (s, e) => UpdateTopControlsWidths();
+            this.Resize += (s, e) => UpdateTopControlsWidths();
             var xmlInner = new Panel { Dock = DockStyle.Fill, Padding = new Padding(5), Tag = "border" };
             // place the detected scripts list inside the XML area (user requested)
             xmlInner.Controls.Add(lstScripts);
             var grpXml = new GroupBox { Text = "XML ファイル", Dock = DockStyle.Fill };
             grpXml.Controls.Add(xmlInner);
             // Add controls: group (fills), then clear button, then recent-files combobox docked at top
+            // Add group first, then topControlsPanel so the top panel stays visible (Dock = Top)
             xmlPanel.Controls.Add(grpXml);
-            xmlPanel.Controls.Add(cbRecentFiles!);
+            xmlPanel.Controls.Add(topControlsPanel);
+
+            // Ensure widths are computed initially
+            try { UpdateTopControlsWidths(); } catch { }
 
             mainLayout.Controls.Add(xmlPanel, 0, 0);
             mainLayout.SetColumnSpan(xmlPanel, 2);
@@ -1093,6 +1149,36 @@ namespace StormworksLuaReplacer
             }
         }
 
+        private void UpdateTopControlsWidths()
+        {
+            try
+            {
+                if (topControlsPanel == null || cbRecentFiles == null || cbScriptFiles == null) return;
+                int w = topControlsPanel.ClientSize.Width - topControlsPanel.Padding.Horizontal;
+                if (w <= 0) return;
+                int minPer = 220; // minimum width to keep them side-by-side
+                // compute total horizontal margins between controls
+                int margins = cbRecentFiles.Margin.Horizontal + cbScriptFiles.Margin.Horizontal + topControlsPanel.Padding.Horizontal + 8;
+                // if there's enough width, place side-by-side on one row
+                if (w >= (minPer * 2) + margins)
+                {
+                    topControlsPanel.WrapContents = false;
+                    int half = Math.Max(120, (w - margins) / 2);
+                    cbRecentFiles.Width = half;
+                    cbScriptFiles.Width = half;
+                }
+                else
+                {
+                    // not enough space — allow wrapping and make each full-width inside panel
+                    topControlsPanel.WrapContents = true;
+                    int full = Math.Max(80, w - topControlsPanel.Padding.Horizontal - 8);
+                    cbRecentFiles.Width = full;
+                    cbScriptFiles.Width = full;
+                }
+            }
+            catch { }
+        }
+
         private void SyncVScrollFromText(System.Windows.Forms.RichTextBox? tb, System.Windows.Forms.VScrollBar? vs)
         {
             if (tb == null || vs == null) return;
@@ -1142,6 +1228,35 @@ namespace StormworksLuaReplacer
             var selectedScript = luaScripts[lstScripts.SelectedIndex];
             txtCurrentScript!.Text = selectedScript.Script;
             UpdateTextScrollbars();
+            // If a mapping exists for this script and the file exists, load it into the new-script editor
+            try
+            {
+                if (!string.IsNullOrWhiteSpace(currentFilePath))
+                {
+                    var key = GetMappingKey(currentFilePath, selectedScript.Index);
+                    if (appState.ScriptFileMappings != null && appState.ScriptFileMappings.TryGetValue(key, out var luaPath) && File.Exists(luaPath))
+                    {
+                        // load file async
+                        Task.Run(async () =>
+                        {
+                            try
+                            {
+                                var text = await File.ReadAllTextAsync(luaPath).ConfigureAwait(false);
+                                this.BeginInvoke(new Action(() =>
+                                {
+                                    txtNewScript!.Text = text;
+                                    txtNewScript.Modified = false;
+                                    currentLuaFilePath = luaPath;
+                                    SetupLuaFileWatcher(luaPath);
+                                    UpdateTextScrollbars();
+                                }));
+                            }
+                            catch { }
+                        });
+                    }
+                }
+            }
+            catch { }
         }
 
         private void LstScripts_DrawItem(object? sender, DrawItemEventArgs e)
@@ -1217,6 +1332,12 @@ namespace StormworksLuaReplacer
             selectedScript.Script = txtNewScript.Text;
             selectedScript.WasReplaced = true;
             txtCurrentScript!.Text = txtNewScript.Text;
+            // Try to auto-link this script to the currently loaded .lua file if mapping doesn't exist
+            try
+            {
+                TryAutoLinkScript(selectedScript);
+            }
+            catch { }
             if (!isHttpRequest)
             {
                 if (suppressMessages)
@@ -1227,6 +1348,31 @@ namespace StormworksLuaReplacer
                 {
                     MessageBox.Show("スクリプトを置換しました。保存するには「XMLを保存」ボタンをクリックしてください。", "成功", MessageBoxButtons.OK, MessageBoxIcon.Information);
                 }
+            }
+        }
+
+        private string GetMappingKey(string xmlPath, int scriptIndex)
+        {
+            try { return Path.GetFullPath(xmlPath) + "|" + scriptIndex.ToString(); } catch { return xmlPath + "|" + scriptIndex.ToString(); }
+        }
+
+        private void TryAutoLinkScript(LuaScriptNode scriptNode)
+        {
+            if (scriptNode == null) return;
+            if (string.IsNullOrWhiteSpace(currentFilePath)) return;
+            if (string.IsNullOrWhiteSpace(currentLuaFilePath)) return;
+            var key = GetMappingKey(currentFilePath!, scriptNode.Index);
+            if (appState.ScriptFileMappings != null && appState.ScriptFileMappings.ContainsKey(key)) return;
+            // If messages are suppressed, create mapping silently; otherwise ask user
+            if (suppressMessages)
+            {
+                try { appState.ScriptFileMappings[key] = currentLuaFilePath!; SaveSettings(); } catch { }
+                return;
+            }
+            var dlgRes = MessageBox.Show($"このスクリプトを現在読み込まれている Lua ファイルに紐づけますか？\n\nスクリプト: {scriptNode.DisplayName}\nファイル: {currentLuaFilePath}", "紐づけの確認", MessageBoxButtons.YesNo, MessageBoxIcon.Question);
+            if (dlgRes == DialogResult.Yes)
+            {
+                try { appState.ScriptFileMappings[key] = currentLuaFilePath!; SaveSettings(); } catch { }
             }
         }
 
@@ -1486,6 +1632,17 @@ namespace StormworksLuaReplacer
                 luaFileWatcher.Path = directory;
                 luaFileWatcher.Filter = fileName;
                 luaFileWatcher.EnableRaisingEvents = true;
+                // Populate cbScriptFiles with .lua files in the same directory
+                try
+                {
+                    if (cbScriptFiles != null)
+                    {
+                        var files = Directory.GetFiles(directory, "*.lua").Select(f => Path.GetFileName(f) ?? string.Empty).Where(n => !string.IsNullOrEmpty(n)).ToList();
+                        cbScriptFiles.UpdateItemsFromList(files);
+                        cbScriptFiles.SelectedItem = fileName;
+                    }
+                }
+                catch { }
                 EnsureLuaReloadTimer();
             }
             catch { currentLuaFilePath = null; }
@@ -1562,6 +1719,7 @@ namespace StormworksLuaReplacer
                 appState.IsDarkTheme = model.IsDarkTheme;
                 appState.SettingsFilePath = string.IsNullOrWhiteSpace(model.SettingsFilePath) ? string.Empty : model.SettingsFilePath;
                 if (model.RecentFiles != null) appState.RecentFiles = model.RecentFiles.ToList();
+                if (model.ScriptFileMappings != null) appState.ScriptFileMappings = model.ScriptFileMappings.ToDictionary(kv => kv.Key, kv => kv.Value);
             }
             catch { }
         }
@@ -1576,7 +1734,8 @@ namespace StormworksLuaReplacer
                     SuppressPrefixPrompt = appState.SuppressPrefixPrompt,
                     IsDarkTheme = appState.IsDarkTheme,
                     SettingsFilePath = appState.SettingsFilePath ?? string.Empty,
-                    RecentFiles = appState.RecentFiles ?? new List<string>()
+                    RecentFiles = appState.RecentFiles ?? new List<string>(),
+                    ScriptFileMappings = appState.ScriptFileMappings ?? new Dictionary<string, string>()
                 };
                 var json = JsonSerializer.Serialize(model, new JsonSerializerOptions { WriteIndented = true });
                 // write to default path
@@ -1641,11 +1800,13 @@ namespace StormworksLuaReplacer
         private void BtnSettings_Click(object? sender, EventArgs e)
         {
             var currentSettingsPath = string.IsNullOrWhiteSpace(appState.SettingsFilePath) ? GetSettingsPath() : appState.SettingsFilePath;
-            using var settingsDialog = new SettingsDialog(appState.ScriptDetectionPrefix, currentSettingsPath);
+            using var settingsDialog = new SettingsDialog(appState.ScriptDetectionPrefix, currentSettingsPath, appState.ScriptFileMappings);
             if (settingsDialog.ShowDialog() == DialogResult.OK)
             {
                 appState.ScriptDetectionPrefix = settingsDialog.DetectionPrefix;
                 if (!string.IsNullOrWhiteSpace(settingsDialog.SettingsFilePath)) appState.SettingsFilePath = settingsDialog.SettingsFilePath;
+                // update mappings
+                try { appState.ScriptFileMappings = settingsDialog.UpdatedMappings ?? new Dictionary<string,string>(); } catch { }
                 SaveSettings();
                 if (vehicleXml != null) { ExtractLuaScripts(); UpdateUI(); MessageBox.Show($"検出条件を更新しました。\n{luaScripts.Count}個のスクリプトが見つかりました。", "成功", MessageBoxButtons.OK, MessageBoxIcon.Information); }
             }
@@ -1893,9 +2054,13 @@ namespace StormworksLuaReplacer
     {
         private readonly TextBox txtPrefix;
         private readonly TextBox txtSettingsPath;
+        private Dictionary<string, string> mappingsCopy;
+        private Button btnManageMappings;
         public string DetectionPrefix { get; private set; }
         public string SettingsFilePath { get => txtSettingsPath?.Text ?? string.Empty; }
-        public SettingsDialog(string currentPrefix, string currentSettingsPath)
+        public Dictionary<string,string> UpdatedMappings => mappingsCopy;
+
+        public SettingsDialog(string currentPrefix, string currentSettingsPath, Dictionary<string,string>? currentMappings = null)
         {
             DetectionPrefix = currentPrefix;
             this.Text = "設定";
@@ -1922,6 +2087,18 @@ namespace StormworksLuaReplacer
             btnOK.Click += (s, e) => { if (string.IsNullOrWhiteSpace(txtPrefix.Text)) { MessageBox.Show("プレフィックスを入力してください。", "警告", MessageBoxButtons.OK, MessageBoxIcon.Warning); this.DialogResult = DialogResult.None; } else DetectionPrefix = txtPrefix.Text; };
             var btnCancel = new Button { Text = "キャンセル", DialogResult = DialogResult.Cancel, Width = 100, Height = 34, Location = new System.Drawing.Point(540, 160) };
 
+            btnManageMappings = new Button { Text = "紐づけを管理...", Width = 140, Height = 28, Location = new System.Drawing.Point(12, 160) };
+            btnManageMappings.Click += (s, e) =>
+            {
+                using var md = new MappingsDialog(mappingsCopy);
+                if (md.ShowDialog(this) == DialogResult.OK)
+                {
+                    mappingsCopy = md.GetMappings();
+                }
+            };
+
+            mappingsCopy = currentMappings != null ? new Dictionary<string,string>(currentMappings) : new Dictionary<string,string>();
+
             // Add controls
             this.Controls.Add(lblDescription);
             this.Controls.Add(lblPrefix);
@@ -1931,6 +2108,7 @@ namespace StormworksLuaReplacer
             this.Controls.Add(btnBrowse);
             this.Controls.Add(btnOK);
             this.Controls.Add(btnCancel);
+            this.Controls.Add(btnManageMappings);
 
             this.AcceptButton = btnOK; this.CancelButton = btnCancel;
         }
@@ -1944,5 +2122,106 @@ namespace StormworksLuaReplacer
         public bool IsDarkTheme { get; set; } = true;
         public string SettingsFilePath { get; set; } = string.Empty;
         public List<string> RecentFiles { get; set; } = new List<string>();
+        public Dictionary<string, string> ScriptFileMappings { get; set; } = new Dictionary<string, string>();
+    }
+
+    public class MappingsDialog : Form
+    {
+        private ListView lv;
+        private Button btnAdd, btnEdit, btnRemove, btnOK, btnCancel;
+        private Dictionary<string, string> mappings;
+        public MappingsDialog(Dictionary<string,string>? current)
+        {
+            this.Text = "スクリプトとファイルの紐づけ管理";
+            this.Size = new Size(800, 400);
+            this.StartPosition = FormStartPosition.CenterParent;
+            mappings = current != null ? new Dictionary<string,string>(current) : new Dictionary<string,string>();
+
+            lv = new ListView { View = View.Details, FullRowSelect = true, Dock = DockStyle.Top, Height = 280 };
+            lv.Columns.Add("Vehicle XML", 360);
+            lv.Columns.Add("Script Index", 80);
+            lv.Columns.Add("Lua File", 320);
+
+            btnAdd = new Button { Text = "追加", Location = new Point(12, 300), Width = 90 };
+            btnEdit = new Button { Text = "編集", Location = new Point(110, 300), Width = 90 };
+            btnRemove = new Button { Text = "削除", Location = new Point(208, 300), Width = 90 };
+            btnOK = new Button { Text = "OK", DialogResult = DialogResult.OK, Location = new Point(600, 320), Width = 80 };
+            btnCancel = new Button { Text = "キャンセル", DialogResult = DialogResult.Cancel, Location = new Point(690, 320), Width = 80 };
+
+            btnAdd.Click += (s,e) => { ShowAddDialog(); RefreshList(); };
+            btnEdit.Click += (s,e) => { EditSelected(); RefreshList(); };
+            btnRemove.Click += (s,e) => { RemoveSelected(); RefreshList(); };
+
+            this.Controls.Add(lv);
+            this.Controls.Add(btnAdd);
+            this.Controls.Add(btnEdit);
+            this.Controls.Add(btnRemove);
+            this.Controls.Add(btnOK);
+            this.Controls.Add(btnCancel);
+
+            RefreshList();
+        }
+
+        private void RefreshList()
+        {
+            lv.Items.Clear();
+            foreach (var kv in mappings)
+            {
+                var parts = kv.Key.Split('|');
+                string vehicle = parts.Length > 0 ? parts[0] : kv.Key;
+                string idx = parts.Length > 1 ? parts[1] : string.Empty;
+                var it = new ListViewItem(new[] { vehicle, idx, kv.Value });
+                it.Tag = kv.Key;
+                lv.Items.Add(it);
+            }
+        }
+
+        private void ShowAddDialog()
+        {
+            using var f = new Form { Text = "マッピングを追加", Size = new Size(640, 200), StartPosition = FormStartPosition.CenterParent, FormBorderStyle = FormBorderStyle.FixedDialog };
+            var lblVehicle = new Label { Text = "Vehicle XML パス:", Location = new Point(8, 12), Width = 120 };
+            var txtVehicle = new TextBox { Location = new Point(130, 10), Width = 420 };
+            var lblIndex = new Label { Text = "スクリプト番号:", Location = new Point(8, 44), Width = 120 };
+            var txtIndex = new TextBox { Location = new Point(130, 42), Width = 100 };
+            var lblLua = new Label { Text = "Lua ファイル:", Location = new Point(8, 76), Width = 120 };
+            var txtLua = new TextBox { Location = new Point(130, 74), Width = 360 };
+            var btnBrowse = new Button { Text = "参照...", Location = new Point(500, 72), Width = 80 };
+            btnBrowse.Click += (s,e) => { using var ofd = new OpenFileDialog { Filter = "Lua files (*.lua)|*.lua|All files (*.*)|*.*" }; if (ofd.ShowDialog(this) == DialogResult.OK) txtLua.Text = ofd.FileName; };
+            var btnOk = new Button { Text = "OK", DialogResult = DialogResult.OK, Location = new Point(420, 110), Width = 80 };
+            var btnCancel = new Button { Text = "キャンセル", DialogResult = DialogResult.Cancel, Location = new Point(520, 110), Width = 80 };
+            f.Controls.AddRange(new Control[] { lblVehicle, txtVehicle, lblIndex, txtIndex, lblLua, txtLua, btnBrowse, btnOk, btnCancel });
+            if (f.ShowDialog(this) == DialogResult.OK)
+            {
+                var v = txtVehicle.Text?.Trim() ?? string.Empty;
+                var i = txtIndex.Text?.Trim() ?? string.Empty;
+                var l = txtLua.Text?.Trim() ?? string.Empty;
+                if (string.IsNullOrWhiteSpace(v) || string.IsNullOrWhiteSpace(i) || string.IsNullOrWhiteSpace(l)) { MessageBox.Show("全ての項目を入力してください。", "警告", MessageBoxButtons.OK, MessageBoxIcon.Warning); return; }
+                var key = v + "|" + i;
+                mappings[key] = l;
+            }
+        }
+
+        private void EditSelected()
+        {
+            if (lv.SelectedItems.Count == 0) return;
+            var key = lv.SelectedItems[0].Tag as string;
+            if (string.IsNullOrEmpty(key)) return;
+            var cur = mappings.ContainsKey(key) ? mappings[key] : string.Empty;
+            using var ofd = new OpenFileDialog { Filter = "Lua files (*.lua)|*.lua|All files (*.*)|*.*" };
+            if (ofd.ShowDialog(this) == DialogResult.OK)
+            {
+                mappings[key] = ofd.FileName;
+            }
+        }
+
+        private void RemoveSelected()
+        {
+            if (lv.SelectedItems.Count == 0) return;
+            var key = lv.SelectedItems[0].Tag as string;
+            if (string.IsNullOrEmpty(key)) return;
+            mappings.Remove(key);
+        }
+
+        public Dictionary<string,string> GetMappings() => new Dictionary<string,string>(mappings);
     }
 }
