@@ -111,6 +111,9 @@ namespace StormworksLuaReplacer
         [System.Runtime.InteropServices.DllImport("user32.dll", CharSet = System.Runtime.InteropServices.CharSet.Auto)]
         private static extern IntPtr SendMessage(IntPtr hWnd, int Msg, IntPtr wParam, IntPtr lParam);
 
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        private static extern bool ReleaseCapture();
+
         private const int WM_VSCROLL = 0x0115;
         private const int SB_PAGEUP = 2;
         private const int SB_PAGEDOWN = 3;
@@ -498,7 +501,18 @@ namespace StormworksLuaReplacer
                 var screenPt = pnlTitleBar.PointToScreen(e.Location);
                 var formPt = this.PointToClient(screenPt);
                 if (GetResizeMode(formPt) != HTCLIENT) return;
-                appState.MouseLocation = e.Location;
+                // Use native window drag to avoid losing focus when moving quickly
+                try
+                {
+                    ReleaseCapture();
+                    SendMessage(this.Handle, 0x00A1, (IntPtr)HTCAPTION, IntPtr.Zero);
+                }
+                catch
+                {
+                    // Fallback to manual movement if native message fails
+                    try { pnlTitleBar.Capture = false; } catch { }
+                    appState.MouseLocation = e.Location;
+                }
             };
             pnlTitleBar.MouseMove += (s, e) =>
             {
@@ -1123,10 +1137,7 @@ namespace StormworksLuaReplacer
         {
             if (e.Control && e.Shift && e.KeyCode == Keys.F5)
             {
-                suppressMessages = true;
-                BtnReplace_Click(null, EventArgs.Empty);
-                BtnSave_Click(null, EventArgs.Empty);
-                suppressMessages = false;
+                _ = PerformReplaceAndSaveAsync();
                 e.Handled = true;
             }
         }
@@ -1140,14 +1151,42 @@ namespace StormworksLuaReplacer
                 if ((Control.ModifierKeys & Keys.Control) != 0 && (Control.ModifierKeys & Keys.Shift) != 0 && key == Keys.F5)
                 {
                     // Execute shortcut
-                    suppressMessages = true;
-                    BtnReplace_Click(null, EventArgs.Empty);
-                    BtnSave_Click(null, EventArgs.Empty);
-                    suppressMessages = false;
+                    try
+                    {
+                        // Marshal to UI thread and run async sequence there so we can await save completion
+                        this.BeginInvoke(new Action(async () => await PerformReplaceAndSaveAsync()));
+                    }
+                    catch
+                    {
+                        // If BeginInvoke fails, fallback to synchronous calls (best-effort)
+                        suppressMessages = true;
+                        BtnReplace_Click(null, EventArgs.Empty);
+                        BtnSave_Click(null, EventArgs.Empty);
+                        suppressMessages = false;
+                    }
                     return (IntPtr)1; // Prevent further processing
                 }
             }
             return CallNextHookEx(_hookID, nCode, wParam, lParam);
+        }
+
+        private async Task PerformReplaceAndSaveAsync()
+        {
+            suppressMessages = true;
+            try
+            {
+                BtnReplace_Click(null, EventArgs.Empty);
+                await BtnSaveAsync();
+                try { System.Media.SystemSounds.Asterisk.Play(); } catch { }
+            }
+            catch
+            {
+                try { System.Media.SystemSounds.Hand.Play(); } catch { }
+            }
+            finally
+            {
+                suppressMessages = false;
+            }
         }
 
         protected override void OnFormClosing(FormClosingEventArgs e)
@@ -1170,9 +1209,42 @@ namespace StormworksLuaReplacer
 
         private async void BtnSave_Click(object? sender, EventArgs e)
         {
-            if (vehicleXml == null || string.IsNullOrEmpty(currentFilePath)) { MessageBox.Show("XMLファイルが読み込まれていません。", "警告", MessageBoxButtons.OK, MessageBoxIcon.Warning); return; }
-            try { await SaveXmlFileAsync(currentFilePath); if (!suppressMessages) MessageBox.Show("XMLファイルを保存しました。", "成功", MessageBoxButtons.OK, MessageBoxIcon.Information); }
-            catch (Exception ex) { MessageBox.Show($"XMLファイルの保存に失敗しました:\n{ex.Message}", "エラー", MessageBoxButtons.OK, MessageBoxIcon.Error); }
+            if (vehicleXml == null || string.IsNullOrEmpty(currentFilePath))
+            {
+                if (!suppressMessages)
+                {
+                    MessageBox.Show("XMLファイルが読み込まれていません。", "警告", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                }
+                else
+                {
+                    try { System.Media.SystemSounds.Exclamation.Play(); } catch { }
+                }
+                return;
+            }
+
+            try
+            {
+                await SaveXmlFileAsync(currentFilePath);
+                if (!suppressMessages)
+                {
+                    MessageBox.Show("XMLファイルを保存しました。", "成功", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                }
+                else
+                {
+                    try { System.Media.SystemSounds.Asterisk.Play(); } catch { }
+                }
+            }
+            catch (Exception ex)
+            {
+                if (!suppressMessages)
+                {
+                    MessageBox.Show($"XMLファイルの保存に失敗しました:\n{ex.Message}", "エラー", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                }
+                else
+                {
+                    try { System.Media.SystemSounds.Hand.Play(); } catch { }
+                }
+            }
         }
 
         private async Task LoadXmlFileAsync()
@@ -1205,7 +1277,7 @@ namespace StormworksLuaReplacer
                                      .Where(s => !(s.Script?.TrimStart().StartsWith(prefix, StringComparison.OrdinalIgnoreCase) ?? false))
                                      .ToList();
 
-            if (toUpdate.Count > 0 && !appState.SuppressPrefixPrompt && !isHttpRequest)
+            if (toUpdate.Count > 0 && !appState.SuppressPrefixPrompt && !isHttpRequest && !suppressMessages)
             {
                 using (var dlg = new PrefixConfirmDialog(toUpdate.Select(s => s.DisplayName).ToList()))
                 {
